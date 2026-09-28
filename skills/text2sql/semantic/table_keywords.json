@@ -1,0 +1,137 @@
+{
+  "_说明": "Schema Linking 关键词映射表（阶段B使用）。keywords 命中问题文本即给该表打分；related 是该事实表常需一起进上下文的表（JOIN 桥/维度表）。只增改本文件即可调选表，无需改代码。",
+  "tables": [
+    {
+      "table": "dim_customer",
+      "business_name": "客户主数据（12个规范客户）",
+      "keywords": ["客户", "顾客", "客户名", "规范客户", "客户等级", "战略客户", "重点客户", "客户区域", "fabless", "customer", "tier"],
+      "related": []
+    },
+    {
+      "table": "dim_supplier",
+      "business_name": "供应商主数据",
+      "keywords": ["供应商", "供货商", "厂商", "供货", "来料厂商", "supplier", "vendor", "供应商评级"],
+      "related": []
+    },
+    {
+      "table": "dim_material",
+      "business_name": "物料主数据（8种）",
+      "keywords": ["物料", "材料", "原料", "物料编码", "物料类别", "ABF膜", "ABF", "铜箔", "干膜", "药水", "钻针", "阻焊", "core", "芯板", "PP", "半固化片", "标准成本", "material"],
+      "related": []
+    },
+    {
+      "table": "dim_product",
+      "business_name": "产品主数据（FCBGA/FCCSP/WBCSP/RF）",
+      "keywords": ["产品", "产品类型", "型号", "FCBGA", "FCCSP", "WBCSP", "RF", "射频", "射频载板", "载板类型", "层数", "表面处理", "ENEPIG", "OSP", "ENIG", "软金", "沉银", "每排板颗数", "product"],
+      "related": []
+    },
+    {
+      "table": "dim_process",
+      "business_name": "工序主数据（17道，11道主过站）",
+      "keywords": ["工序", "工站", "制程", "工艺", "流程", "主过站", "关键工序", "process", "内层", "压合", "钻孔", "沉铜", "电镀", "外层", "阻焊", "表处", "成型", "电测", "飞针", "终检", "FQC", "OQC", "包装", "P01", "P04", "P06", "P07", "P08", "P09", "P11", "P12", "P14", "P15", "P17", "最差工序", "工序排名"],
+      "related": []
+    },
+    {
+      "table": "dim_line",
+      "business_name": "产线主数据（3条，一厂/二厂）",
+      "keywords": ["产线", "生产线", "线别", "线体", "工厂", "厂区", "一厂", "二厂", "秦皇岛", "line"],
+      "related": []
+    },
+    {
+      "table": "dim_equipment",
+      "business_name": "设备主数据（51台）",
+      "keywords": ["设备", "机台", "机器", "装置", "equipment", "设备型号", "设备名称", "设备状态"],
+      "related": []
+    },
+    {
+      "table": "dim_employee",
+      "business_name": "员工主数据",
+      "keywords": ["员工", "人员", "操作工", "操作员", "部门", "employee", "operator", "制造部", "品质部"],
+      "related": []
+    },
+    {
+      "table": "dim_shift",
+      "business_name": "班次（白班/夜班）",
+      "keywords": ["班次", "白班", "夜班", "排班", "shift"],
+      "related": []
+    },
+    {
+      "table": "dim_defect_code",
+      "business_name": "缺陷代码字典（19种）",
+      "keywords": ["缺陷代码", "缺陷类型", "不良类型", "不良代码", "缺陷分类", "缺陷名称", "defect code", "开路", "短路", "外观缺陷", "尺寸缺陷"],
+      "related": []
+    },
+    {
+      "table": "fact_sales_order",
+      "business_name": "销售订单头（420张，含客户脏名/正式单与forecast）",
+      "keywords": ["订单", "下单", "接单", "订单数", "订单头", "销售", "销售额", "营收", "收入", "客户金额", "金额排名", "正式单", "预测单", "forecast", "order", "订单日期", "今年订单"],
+      "related": ["dim_customer", "fact_sales_order_item"]
+    },
+    {
+      "table": "fact_sales_order_item",
+      "business_name": "销售订单行（数量×单价=金额，交期due_date）",
+      "keywords": ["订单行", "订单明细", "订单金额", "销售额", "销售金额", "单价", "订购数量", "订单量", "交期", "应交货", "due", "unit_price", "明细", "产品占比"],
+      "related": ["fact_sales_order", "dim_product", "fact_work_order"]
+    },
+    {
+      "table": "fact_shipment",
+      "business_name": "出货单（301张，OTD主表）",
+      "keywords": ["出货", "发货", "交货", "交付", "准时", "OTD", "准时交付", "准时交付率", "延迟交付", "延期交付", "逾期交付", "出货日期", "应出货", "按时", "按时出货", "shipment", "出货批"],
+      "related": ["fact_sales_order", "fact_sales_order_item", "dim_customer", "fact_shipment_item"]
+    },
+    {
+      "table": "fact_shipment_item",
+      "business_name": "出货明细行（实际出货颗数）",
+      "keywords": ["出货明细", "出货量", "出货数量", "出货颗数", "实际出货", "出货行", "shipment item"],
+      "related": ["fact_shipment"]
+    },
+    {
+      "table": "fact_inventory",
+      "business_name": "库存（原料8/成品600）",
+      "keywords": ["库存", "存货", "备货", "仓库", "库房", "库存数量", "库存金额", "原料库存", "成品库存", "在手量", "各类物料", "inventory", "stock"],
+      "related": ["dim_material"]
+    },
+    {
+      "table": "fact_receivable",
+      "business_name": "应收账款（账龄/逾期）",
+      "keywords": ["应收", "应收账款", "账龄", "逾期", "逾期金额", "未收", "已收", "回款", "收款", "账期", "欠款", "部分收款", "呆账", "receivable", "AR"],
+      "related": ["dim_customer"]
+    },
+    {
+      "table": "fact_work_order",
+      "business_name": "工单/批次（1800个，WO/26双格式，在制218）",
+      "keywords": ["工单", "批次", "批号", "批", "lot", "排产", "投产", "发放", "计划完工", "在制", "在制批次", "未完工", "已完工", "完工批次", "WO", "2606", "2609", "work order", "完工工单"],
+      "related": []
+    },
+    {
+      "table": "fact_process_record",
+      "business_name": "过站记录核心表（31991行，FPY/RTY/报废/返工）",
+      "keywords": ["过站", "过站记录", "进站", "出站", "投入", "总投入", "投入量", "产出", "良品", "良品数", "良率", "一次通过", "FPY", "RTY", "直通率", "滚动直通率", "报废", "报废率", "返工", "返工量", "返工率", "重过站", "工序良率", "排板数", "panels", "scrap", "rework", "中位数", "良率对比"],
+      "related": ["dim_process", "fact_work_order"]
+    },
+    {
+      "table": "fact_defect",
+      "business_name": "缺陷明细（4761条）",
+      "keywords": ["缺陷", "不良", "不良品", "缺陷明细", "缺陷频次", "缺陷数", "缺陷记录", "不良数", "AOI", "目检", "X-Ray", "检测方式", "defect", "不良缺陷", "频次"],
+      "related": ["dim_defect_code", "dim_process"]
+    },
+    {
+      "table": "fact_etest",
+      "business_name": "电测P15结果（1582批）",
+      "keywords": ["电测", "电性测试", "飞针测试", "治具测试", "P15", "测试通过率", "电测通过率", "开路不良", "短路不良", "绝缘不良", "etest", "tested", "pass"],
+      "related": []
+    },
+    {
+      "table": "fact_equipment_downtime",
+      "business_name": "设备停机记录（OEE用）",
+      "keywords": ["停机", "停线", "停机时长", "停机时间", "停机最长", "停机原因", "设备停机", "故障", "换型", "待料", "保养", "动力", "downtime", "OEE", "稼动", "时间稼动", "性能稼动"],
+      "related": ["dim_equipment"]
+    },
+    {
+      "table": "fact_customer_complaint",
+      "business_name": "客户客诉（含现成dppm字段，28条）",
+      "keywords": ["客诉", "投诉", "客户投诉", "客户抱怨", "抱怨", "8D", "complaint", "DPPM", "百万不良", "客诉DPPM", "处理中"],
+      "related": ["dim_customer", "dim_product"]
+    }
+  ]
+}

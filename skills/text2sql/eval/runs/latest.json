@@ -1,0 +1,2157 @@
+{
+  "run_time": "20260928_102129",
+  "model": "deepseek-chat",
+  "snapshot_date": "2026-09-24",
+  "total": 50,
+  "passed": 50,
+  "pass_rate": 1.0,
+  "records": [
+    {
+      "id": "E01",
+      "module": "工单/在制",
+      "question": "当前在制工单有多少批？",
+      "expected_points": [
+        "218"
+      ],
+      "picked_tables": [
+        "fact_work_order"
+      ],
+      "sql": "SELECT COUNT(*) AS wip_lots\nFROM fact_work_order\nWHERE lot_status = '在制'",
+      "columns": [
+        "wip_lots"
+      ],
+      "rows": [
+        [
+          218
+        ]
+      ],
+      "checks": [
+        {
+          "point": "218",
+          "hit": true,
+          "matched": 218.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.5,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E02",
+      "module": "工单/完工",
+      "question": "已经完工的批次一共有多少批？",
+      "expected_points": [
+        "1582"
+      ],
+      "picked_tables": [
+        "fact_work_order"
+      ],
+      "sql": "SELECT COUNT(*) AS completed_lots\nFROM fact_work_order\nWHERE lot_status = '已完工'",
+      "columns": [
+        "completed_lots"
+      ],
+      "rows": [
+        [
+          1582
+        ]
+      ],
+      "checks": [
+        {
+          "point": "1582",
+          "hit": true,
+          "matched": 1582.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.0,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E03",
+      "module": "销售/客户",
+      "question": "各客户正式订单销售额排名，第一名是谁、金额多少？",
+      "expected_points": [
+        "韦尔股份豪威",
+        "516411"
+      ],
+      "picked_tables": [
+        "fact_sales_order",
+        "fact_sales_order_item",
+        "dim_customer",
+        "dim_product"
+      ],
+      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       ROUND(SUM(i.order_qty * i.unit_price), 2) AS amount\nFROM fact_sales_order o\nJOIN fact_sales_order_item i ON i.order_id = o.order_id\nJOIN dim_customer c ON c.customer_id = o.customer_id\nWHERE o.order_type = '正式单'\nGROUP BY c.customer_id, c.customer_name\nORDER BY amount DESC\nLIMIT 1",
+      "columns": [
+        "customer_id",
+        "customer_name",
+        "amount"
+      ],
+      "rows": [
+        [
+          "C006",
+          "韦尔股份豪威",
+          516411.0
+        ]
+      ],
+      "checks": [
+        {
+          "point": "韦尔股份豪威",
+          "hit": true,
+          "matched": "韦尔股份豪威"
+        },
+        {
+          "point": "516411",
+          "hit": true,
+          "matched": 516411.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.6,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E04",
+      "module": "销售/客户",
+      "question": "韦尔股份豪威今年下了多少张正式订单，总金额多少？",
+      "expected_points": [
+        "38",
+        "516411"
+      ],
+      "picked_tables": [
+        "fact_sales_order",
+        "dim_customer",
+        "fact_sales_order_item"
+      ],
+      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       COUNT(DISTINCT o.order_id) AS order_cnt,\n       ROUND(SUM(i.order_qty * i.unit_price), 2) AS amount\nFROM fact_sales_order o\nJOIN fact_sales_order_item i ON i.order_id = o.order_id\nJOIN dim_customer c ON c.customer_id = o.customer_id\nWHERE o.order_type = '正式单'\n  AND o.order_date >= '2026-01-01'\n  AND c.customer_name = '韦尔股份豪威'\nGROUP BY c.customer_id, c.customer_name",
+      "columns": [
+        "customer_id",
+        "customer_name",
+        "order_cnt",
+        "amount"
+      ],
+      "rows": [
+        [
+          "C006",
+          "韦尔股份豪威",
+          38,
+          516411.0
+        ]
+      ],
+      "checks": [
+        {
+          "point": "38",
+          "hit": true,
+          "matched": 38.0
+        },
+        {
+          "point": "516411",
+          "hit": true,
+          "matched": 516411.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.8,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E05",
+      "module": "销售/产品",
+      "question": "各产品类型的正式订单销售额分别是多少？",
+      "expected_points": [
+        "FCBGA",
+        "2538507.6",
+        "FCCSP",
+        "865915.2",
+        "WBCSP",
+        "353137.2",
+        "RF",
+        "184507.2"
+      ],
+      "picked_tables": [
+        "fact_sales_order",
+        "dim_product",
+        "fact_sales_order_item",
+        "dim_customer"
+      ],
+      "sql": "SELECT pr.product_type,\n       ROUND(SUM(i.order_qty * i.unit_price), 2) AS amount\nFROM fact_sales_order o\nJOIN fact_sales_order_item i ON i.order_id = o.order_id\nJOIN dim_product pr ON pr.product_id = i.product_id\nWHERE o.order_type = '正式单'\nGROUP BY pr.product_type\nORDER BY amount DESC",
+      "columns": [
+        "product_type",
+        "amount"
+      ],
+      "rows": [
+        [
+          "FCBGA",
+          2538507.6
+        ],
+        [
+          "FCCSP",
+          865915.2
+        ],
+        [
+          "WBCSP",
+          353137.2
+        ],
+        [
+          "RF",
+          184507.2
+        ]
+      ],
+      "checks": [
+        {
+          "point": "FCBGA",
+          "hit": true,
+          "matched": "FCBGA"
+        },
+        {
+          "point": "2538507.6",
+          "hit": true,
+          "matched": 2538507.6
+        },
+        {
+          "point": "FCCSP",
+          "hit": true,
+          "matched": "FCCSP"
+        },
+        {
+          "point": "865915.2",
+          "hit": true,
+          "matched": 865915.2
+        },
+        {
+          "point": "WBCSP",
+          "hit": true,
+          "matched": "WBCSP"
+        },
+        {
+          "point": "353137.2",
+          "hit": true,
+          "matched": 353137.2
+        },
+        {
+          "point": "RF",
+          "hit": true,
+          "matched": "RF"
+        },
+        {
+          "point": "184507.2",
+          "hit": true,
+          "matched": 184507.2
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.6,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E06",
+      "module": "质量/RTY",
+      "question": "工单260600002的整体RTY是多少？",
+      "expected_points": [
+        "0.707或0.7070"
+      ],
+      "picked_tables": [
+        "fact_work_order",
+        "fact_process_record",
+        "dim_process"
+      ],
+      "sql": "WITH fpy AS (\n  SELECT process_id,\n         good_panels * 1.0 / input_panels AS f\n  FROM fact_process_record\n  WHERE lot_id = '260600002'\n    AND is_rework_pass = 0\n)\nSELECT '260600002' AS lot_id,\n       (SELECT lot_status FROM fact_work_order WHERE lot_id = '260600002') AS lot_status,\n       ROUND(\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END), 4) AS rty\nFROM fpy\nHAVING COUNT(DISTINCT process_id) = 17",
+      "columns": [
+        "lot_id",
+        "lot_status",
+        "rty"
+      ],
+      "rows": [
+        [
+          "260600002",
+          "已完工",
+          0.707
+        ]
+      ],
+      "checks": [
+        {
+          "point": "0.707或0.7070",
+          "hit": true,
+          "matched": 0.707
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 2.1,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E07",
+      "module": "质量/RTY",
+      "question": "全部已完工批次的整体RTY平均值和中位数是多少？",
+      "expected_points": [
+        "0.8179",
+        "0.8237"
+      ],
+      "picked_tables": [
+        "fact_work_order",
+        "fact_process_record",
+        "dim_process"
+      ],
+      "sql": "WITH fpy AS (\n  SELECT p.lot_id,\n         p.process_id,\n         p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n),\nordered AS (\n  SELECT rty,\n         ROW_NUMBER() OVER (ORDER BY rty) AS rn,\n         COUNT(*) OVER () AS n\n  FROM lot_rty\n),\nmid AS (\n  SELECT rty FROM ordered WHERE rn IN ((n + 1) / 2, (n + 2) / 2)\n)\nSELECT (SELECT COUNT(*) FROM lot_rty) AS lot_cnt,\n       ROUND((SELECT AVG(rty) FROM lot_rty), 4) AS avg_rty,\n       ROUND(AVG(mid.rty), 4) AS median_rty\nFROM mid",
+      "columns": [
+        "lot_cnt",
+        "avg_rty",
+        "median_rty"
+      ],
+      "rows": [
+        [
+          1582,
+          0.8179,
+          0.8237
+        ]
+      ],
+      "checks": [
+        {
+          "point": "0.8179",
+          "hit": true,
+          "matched": 0.8179
+        },
+        {
+          "point": "0.8237",
+          "hit": true,
+          "matched": 0.8179
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 13.9,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E08",
+      "module": "质量/RTY",
+      "question": "FCBGA和FCCSP两类产品的RTY分别是多少？",
+      "expected_points": [
+        "FCBGA",
+        "0.8025",
+        "FCCSP",
+        "0.8305"
+      ],
+      "picked_tables": [
+        "dim_product",
+        "fact_process_record",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "WITH fpy AS (\n  SELECT p.lot_id,\n         p.process_id,\n         p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n)\nSELECT pr.product_type,\n       COUNT(*) AS lot_cnt,\n       ROUND(AVG(r.rty), 4) AS avg_rty\nFROM lot_rty r\nJOIN fact_work_order w ON w.lot_id = r.lot_id\nJOIN dim_product pr ON pr.product_id = w.product_id\nWHERE pr.product_type IN ('FCBGA', 'FCCSP')\nGROUP BY pr.product_type\nORDER BY avg_rty DESC",
+      "columns": [
+        "product_type",
+        "lot_cnt",
+        "avg_rty"
+      ],
+      "rows": [
+        [
+          "FCCSP",
+          422,
+          0.8305
+        ],
+        [
+          "FCBGA",
+          826,
+          0.8025
+        ]
+      ],
+      "checks": [
+        {
+          "point": "FCBGA",
+          "hit": true,
+          "matched": "FCBGA"
+        },
+        {
+          "point": "0.8025",
+          "hit": true,
+          "matched": 0.8025
+        },
+        {
+          "point": "FCCSP",
+          "hit": true,
+          "matched": "FCCSP"
+        },
+        {
+          "point": "0.8305",
+          "hit": true,
+          "matched": 0.8305
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 2.4,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E09",
+      "module": "质量/FPY",
+      "question": "所有工序里一次通过率FPY最差的是哪道工序？是多少？",
+      "expected_points": [
+        "P09",
+        "0.976"
+      ],
+      "picked_tables": [
+        "fact_process_record",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "SELECT pr.process_seq,\n       p.process_id,\n       pr.process_name,\n       SUM(p.input_panels) AS input_panels,\n       ROUND(SUM(p.good_panels) * 1.0 / SUM(p.input_panels), 4) AS fpy\nFROM fact_process_record p\nJOIN fact_work_order w ON w.lot_id = p.lot_id\nJOIN dim_process pr ON pr.process_id = p.process_id\nWHERE w.lot_status = '已完工'\n  AND p.is_rework_pass = 0\nGROUP BY p.process_id, pr.process_seq, pr.process_name\nORDER BY fpy ASC\nLIMIT 1",
+      "columns": [
+        "process_seq",
+        "process_id",
+        "process_name",
+        "input_panels",
+        "fpy"
+      ],
+      "rows": [
+        [
+          9,
+          "P09",
+          "外层图形LDI图形电镀闪蚀",
+          43102,
+          0.976
+        ]
+      ],
+      "checks": [
+        {
+          "point": "P09",
+          "hit": true,
+          "matched": "P09"
+        },
+        {
+          "point": "0.976",
+          "hit": true,
+          "matched": 0.976
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.7,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E10",
+      "module": "质量/报废",
+      "question": "本月的报废率是多少？",
+      "expected_points": [
+        "0.0084或0.84"
+      ],
+      "picked_tables": [
+        "fact_process_record",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "SELECT SUM(scrap_panels) AS scrap_panels,\n       SUM(input_panels) AS input_panels,\n       ROUND(SUM(scrap_panels) * 1.0 / SUM(input_panels), 4) AS scrap_rate\nFROM fact_process_record\nWHERE is_rework_pass = 0\n  AND date(out_time) >= date('2026-09-24', 'start of month')",
+      "columns": [
+        "scrap_panels",
+        "input_panels",
+        "scrap_rate"
+      ],
+      "rows": [
+        [
+          1309,
+          156141,
+          0.0084
+        ]
+      ],
+      "checks": [
+        {
+          "point": "0.0084或0.84",
+          "hit": true,
+          "matched": 0.0084
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.5,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E11",
+      "module": "质量/返工",
+      "question": "全期返工数量占总投入排板数的比例是多少？",
+      "expected_points": [
+        "2677",
+        "833444",
+        "0.0032或0.32"
+      ],
+      "picked_tables": [
+        "fact_process_record",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "SELECT SUM(rework_panels) AS rework_panels,\n       SUM(input_panels) AS input_panels,\n       ROUND(SUM(rework_panels) * 1.0 / SUM(input_panels), 4) AS rework_rate\nFROM fact_process_record\nWHERE is_rework_pass = 0",
+      "columns": [
+        "rework_panels",
+        "input_panels",
+        "rework_rate"
+      ],
+      "rows": [
+        [
+          2677,
+          833444,
+          0.0032
+        ]
+      ],
+      "checks": [
+        {
+          "point": "2677",
+          "hit": true,
+          "matched": 2677.0
+        },
+        {
+          "point": "833444",
+          "hit": true,
+          "matched": 833444.0
+        },
+        {
+          "point": "0.0032或0.32",
+          "hit": true,
+          "matched": 0.0032
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.9,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E12",
+      "module": "交付/OTD",
+      "question": "本月的准时交付率是多少？",
+      "expected_points": [
+        "118",
+        "41",
+        "0.3475或34.75"
+      ],
+      "picked_tables": [
+        "fact_shipment",
+        "fact_sales_order",
+        "fact_sales_order_item",
+        "dim_customer"
+      ],
+      "sql": "SELECT COUNT(*) AS ship_cnt,\n       SUM(CASE WHEN s.ship_date <= d.due_date THEN 1 ELSE 0 END) AS on_time_cnt,\n       ROUND(SUM(CASE WHEN s.ship_date <= d.due_date THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4) AS otd\nFROM fact_shipment s\nJOIN (\n  SELECT order_id, MIN(due_date) AS due_date\n  FROM fact_sales_order_item\n  GROUP BY order_id\n) d ON d.order_id = s.order_id\nWHERE s.ship_date >= date('2026-09-24', 'start of month')",
+      "columns": [
+        "ship_cnt",
+        "on_time_cnt",
+        "otd"
+      ],
+      "rows": [
+        [
+          118,
+          41,
+          0.3475
+        ]
+      ],
+      "checks": [
+        {
+          "point": "118",
+          "hit": true,
+          "matched": 118.0
+        },
+        {
+          "point": "41",
+          "hit": true,
+          "matched": 41.0
+        },
+        {
+          "point": "0.3475或34.75",
+          "hit": true,
+          "matched": 0.3475
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.6,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E13",
+      "module": "财务/应收",
+      "question": "未结清应收账款笔数最多的是哪个客户、多少笔？",
+      "expected_points": [
+        "韦尔股份豪威",
+        "14"
+      ],
+      "picked_tables": [
+        "fact_receivable",
+        "dim_customer"
+      ],
+      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       COUNT(*) AS 未结清笔数\nFROM fact_receivable r\nJOIN dim_customer c ON c.customer_id = r.customer_id\nWHERE r.status IN ('部分','未收')\nGROUP BY c.customer_id, c.customer_name\nORDER BY 未结清笔数 DESC\nLIMIT 1",
+      "columns": [
+        "customer_id",
+        "customer_name",
+        "未结清笔数"
+      ],
+      "rows": [
+        [
+          "C006",
+          "韦尔股份豪威",
+          14
+        ]
+      ],
+      "checks": [
+        {
+          "point": "韦尔股份豪威",
+          "hit": true,
+          "matched": "韦尔股份豪威"
+        },
+        {
+          "point": "14",
+          "hit": true,
+          "matched": 14.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.3,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E14",
+      "module": "交付/出货",
+      "question": "最近一周实际出货多少颗，同期计划出货多少颗？",
+      "expected_points": [
+        "732240",
+        "900000"
+      ],
+      "picked_tables": [
+        "fact_shipment_item",
+        "fact_shipment",
+        "fact_sales_order",
+        "fact_sales_order_item"
+      ],
+      "sql": "SELECT\n  (SELECT COALESCE(SUM(si.ship_qty_units), 0)\n   FROM fact_shipment s\n   JOIN fact_shipment_item si ON si.shipment_id = s.shipment_id\n   WHERE s.ship_date BETWEEN date('2026-09-24', '-6 day') AND '2026-09-24'\n  ) AS actual_units,\n  (SELECT COALESCE(SUM(i.order_qty), 0)\n   FROM fact_sales_order_item i\n   WHERE i.due_date BETWEEN date('2026-09-24', '-6 day') AND '2026-09-24'\n  ) AS planned_units",
+      "columns": [
+        "actual_units",
+        "planned_units"
+      ],
+      "rows": [
+        [
+          732240,
+          900000
+        ]
+      ],
+      "checks": [
+        {
+          "point": "732240",
+          "hit": true,
+          "matched": 732240.0
+        },
+        {
+          "point": "900000",
+          "hit": true,
+          "matched": 900000.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.6,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E15",
+      "module": "质量/缺陷",
+      "question": "出现次数最多的缺陷原因是什么、多少次？",
+      "expected_points": [
+        "孔位偏移",
+        "641"
+      ],
+      "picked_tables": [
+        "fact_defect",
+        "dim_defect_code",
+        "dim_process"
+      ],
+      "sql": "SELECT dc.defect_code,\n       dc.defect_name,\n       dc.defect_category,\n       SUM(d.defect_qty) AS defect_qty\nFROM fact_defect d\nJOIN dim_defect_code dc ON dc.defect_code = d.defect_code\nGROUP BY dc.defect_code, dc.defect_name, dc.defect_category\nORDER BY defect_qty DESC\nLIMIT 1",
+      "columns": [
+        "defect_code",
+        "defect_name",
+        "defect_category",
+        "defect_qty"
+      ],
+      "rows": [
+        [
+          "D-HOLE",
+          "孔位偏移",
+          "孔",
+          641
+        ]
+      ],
+      "checks": [
+        {
+          "point": "孔位偏移",
+          "hit": true,
+          "matched": "孔位偏移"
+        },
+        {
+          "point": "641",
+          "hit": true,
+          "matched": 641.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.4,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E16",
+      "module": "质量/电测",
+      "question": "全期电测通过率是多少？",
+      "expected_points": [
+        "41086",
+        "40164",
+        "0.9776或97.76"
+      ],
+      "picked_tables": [
+        "fact_etest",
+        "dim_process"
+      ],
+      "sql": "SELECT COUNT(*) AS test_lots,\n       SUM(tested_panels) AS tested_panels,\n       SUM(pass_panels) AS pass_panels,\n       ROUND(SUM(pass_panels) * 1.0 / SUM(tested_panels), 4) AS pass_rate\nFROM fact_etest",
+      "columns": [
+        "test_lots",
+        "tested_panels",
+        "pass_panels",
+        "pass_rate"
+      ],
+      "rows": [
+        [
+          1582,
+          41086,
+          40164,
+          0.9776
+        ]
+      ],
+      "checks": [
+        {
+          "point": "41086",
+          "hit": true,
+          "matched": 41086.0
+        },
+        {
+          "point": "40164",
+          "hit": true,
+          "matched": 40164.0
+        },
+        {
+          "point": "0.9776或97.76",
+          "hit": true,
+          "matched": 0.9776
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E17",
+      "module": "客诉",
+      "question": "寒武纪的客诉有多少次，平均DPPM和最高DPPM分别是多少？",
+      "expected_points": [
+        "寒武纪",
+        "2",
+        "148",
+        "149"
+      ],
+      "picked_tables": [
+        "fact_customer_complaint",
+        "dim_material",
+        "dim_customer",
+        "dim_product"
+      ],
+      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       COUNT(*) AS complaint_cnt,\n       ROUND(AVG(x.dppm), 1) AS avg_dppm,\n       MAX(x.dppm) AS max_dppm\nFROM fact_customer_complaint x\nJOIN dim_customer c ON c.customer_id = x.customer_id\nWHERE c.customer_name = '寒武纪'\nGROUP BY c.customer_id, c.customer_name",
+      "columns": [
+        "customer_id",
+        "customer_name",
+        "complaint_cnt",
+        "avg_dppm",
+        "max_dppm"
+      ],
+      "rows": [
+        [
+          "C007",
+          "寒武纪",
+          2,
+          148.0,
+          149
+        ]
+      ],
+      "checks": [
+        {
+          "point": "寒武纪",
+          "hit": true,
+          "matched": "寒武纪"
+        },
+        {
+          "point": "2",
+          "hit": true,
+          "matched": 2.0
+        },
+        {
+          "point": "148",
+          "hit": true,
+          "matched": 148.0
+        },
+        {
+          "point": "149",
+          "hit": true,
+          "matched": 148.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E18",
+      "module": "设备/停机",
+      "question": "停机总时长最长的是哪台设备、累计多少分钟？",
+      "expected_points": [
+        "Q0202",
+        "1200"
+      ],
+      "picked_tables": [
+        "dim_equipment",
+        "fact_equipment_downtime"
+      ],
+      "sql": "SELECT e.equipment_id,\n       e.equipment_name,\n       SUM(dt.duration_min) AS total_down_min,\n       COUNT(*) AS down_times\nFROM fact_equipment_downtime dt\nJOIN dim_equipment e ON e.equipment_id = dt.equipment_id\nGROUP BY e.equipment_id, e.equipment_name\nORDER BY total_down_min DESC\nLIMIT 1",
+      "columns": [
+        "equipment_id",
+        "equipment_name",
+        "total_down_min",
+        "down_times"
+      ],
+      "rows": [
+        [
+          "Q0202",
+          "内层AOI机台",
+          1200,
+          3
+        ]
+      ],
+      "checks": [
+        {
+          "point": "Q0202",
+          "hit": true,
+          "matched": "Q0202"
+        },
+        {
+          "point": "1200",
+          "hit": true,
+          "matched": 1200.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E19",
+      "module": "库存",
+      "question": "芯板CORE（物料M001）的库存数量和库存金额是多少？",
+      "expected_points": [
+        "M001或芯板",
+        "479",
+        "354119.91"
+      ],
+      "picked_tables": [
+        "fact_inventory",
+        "dim_material"
+      ],
+      "sql": "SELECT m.material_id,\n       m.material_name,\n       m.category,\n       SUM(i.qty_on_hand) AS qty_on_hand,\n       ROUND(SUM(i.qty_on_hand * COALESCE(m.standard_cost, 0)), 2) AS amount\nFROM fact_inventory i\nJOIN dim_material m ON m.material_id = i.material_id\nWHERE i.material_id = 'M001'\nGROUP BY m.material_id, m.material_name, m.category",
+      "columns": [
+        "material_id",
+        "material_name",
+        "category",
+        "qty_on_hand",
+        "amount"
+      ],
+      "rows": [
+        [
+          "M001",
+          "芯板CORE",
+          "core",
+          479,
+          354119.91
+        ]
+      ],
+      "checks": [
+        {
+          "point": "M001或芯板",
+          "hit": true,
+          "matched": "M001"
+        },
+        {
+          "point": "479",
+          "hit": true,
+          "matched": 479.0
+        },
+        {
+          "point": "354119.91",
+          "hit": true,
+          "matched": 354119.91
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.3,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E20",
+      "module": "财务/账龄",
+      "question": "按2026-09-24快照，未结清应收账款的未到期余额和逾期金额分别是多少？",
+      "expected_points": [
+        "738598.07",
+        "0"
+      ],
+      "picked_tables": [
+        "fact_receivable",
+        "dim_customer"
+      ],
+      "sql": "SELECT\n  ROUND(SUM(CASE WHEN x.due_date >= '2026-09-24' THEN x.bal ELSE 0 END), 2) AS 未到期余额,\n  ROUND(SUM(CASE WHEN x.due_date <  '2026-09-24' THEN x.bal ELSE 0 END), 2) AS 逾期金额,\n  COUNT(*) AS 未结清笔数\nFROM (\n  SELECT r.due_date,\n         r.amount - r.received_amount AS bal\n  FROM fact_receivable r\n  WHERE r.status IN ('部分','未收')\n) x",
+      "columns": [
+        "未到期余额",
+        "逾期金额",
+        "未结清笔数"
+      ],
+      "rows": [
+        [
+          738598.07,
+          0.0,
+          99
+        ]
+      ],
+      "checks": [
+        {
+          "point": "738598.07",
+          "hit": true,
+          "matched": 738598.07
+        },
+        {
+          "point": "0",
+          "hit": true,
+          "matched": 0.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E21",
+      "module": "工单/产线",
+      "question": "工单数量最多的是哪条产线、多少批？",
+      "expected_points": [
+        "FCBGA专线",
+        "948"
+      ],
+      "picked_tables": [
+        "fact_work_order",
+        "dim_line"
+      ],
+      "sql": "SELECT l.line_id,\n       l.line_name,\n       l.factory,\n       COUNT(*) AS lot_cnt\nFROM fact_work_order w\nJOIN dim_line l ON l.line_id = w.line_id\nGROUP BY l.line_id, l.line_name, l.factory\nORDER BY lot_cnt DESC\nLIMIT 1",
+      "columns": [
+        "line_id",
+        "line_name",
+        "factory",
+        "lot_cnt"
+      ],
+      "rows": [
+        [
+          "L2",
+          "FCBGA专线",
+          "秦皇岛二厂",
+          948
+        ]
+      ],
+      "checks": [
+        {
+          "point": "FCBGA专线",
+          "hit": true,
+          "matched": "FCBGA专线"
+        },
+        {
+          "point": "948",
+          "hit": true,
+          "matched": 948.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.3,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E22",
+      "module": "工单",
+      "question": "6月份一共发放了多少批工单？",
+      "expected_points": [
+        "463"
+      ],
+      "picked_tables": [
+        "fact_work_order"
+      ],
+      "sql": "SELECT COUNT(*) AS lot_cnt\nFROM fact_work_order\nWHERE release_date >= '2026-06-01'\n  AND release_date < '2026-07-01'",
+      "columns": [
+        "lot_cnt"
+      ],
+      "rows": [
+        [
+          463
+        ]
+      ],
+      "checks": [
+        {
+          "point": "463",
+          "hit": true,
+          "matched": 463.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 0.9,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E23",
+      "module": "订单",
+      "question": "预测单forecast一共有多少张？",
+      "expected_points": [
+        "131"
+      ],
+      "picked_tables": [
+        "fact_sales_order",
+        "dim_customer",
+        "fact_sales_order_item"
+      ],
+      "sql": "SELECT COUNT(*) AS forecast_order_cnt\nFROM fact_sales_order\nWHERE order_type = 'forecast'",
+      "columns": [
+        "forecast_order_cnt"
+      ],
+      "rows": [
+        [
+          131
+        ]
+      ],
+      "checks": [
+        {
+          "point": "131",
+          "hit": true,
+          "matched": 131.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E24",
+      "module": "订单",
+      "question": "正式订单占全部订单的比例是多少？",
+      "expected_points": [
+        "289",
+        "420",
+        "0.6881或68.81"
+      ],
+      "picked_tables": [
+        "fact_sales_order",
+        "dim_customer",
+        "fact_sales_order_item"
+      ],
+      "sql": "SELECT COUNT(*) AS 全部订单数,\n       SUM(CASE WHEN order_type = '正式单' THEN 1 ELSE 0 END) AS 正式订单数,\n       ROUND(SUM(CASE WHEN order_type = '正式单' THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4) AS 正式单占比\nFROM fact_sales_order",
+      "columns": [
+        "全部订单数",
+        "正式订单数",
+        "正式单占比"
+      ],
+      "rows": [
+        [
+          420,
+          289,
+          0.6881
+        ]
+      ],
+      "checks": [
+        {
+          "point": "289",
+          "hit": true,
+          "matched": 289.0
+        },
+        {
+          "point": "420",
+          "hit": true,
+          "matched": 420.0
+        },
+        {
+          "point": "0.6881或68.81",
+          "hit": true,
+          "matched": 0.6881
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 2.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E25",
+      "module": "销售/区域",
+      "question": "哪个区域的正式订单销售额最高、金额多少？",
+      "expected_points": [
+        "华东",
+        "1773370.8"
+      ],
+      "picked_tables": [
+        "fact_sales_order",
+        "fact_sales_order_item",
+        "dim_customer",
+        "dim_product"
+      ],
+      "sql": "SELECT c.region,\n       ROUND(SUM(i.order_qty * i.unit_price), 2) AS amount\nFROM fact_sales_order o\nJOIN fact_sales_order_item i ON i.order_id = o.order_id\nJOIN dim_customer c ON c.customer_id = o.customer_id\nWHERE o.order_type = '正式单'\nGROUP BY c.region\nORDER BY amount DESC\nLIMIT 1",
+      "columns": [
+        "region",
+        "amount"
+      ],
+      "rows": [
+        [
+          "华东",
+          1773370.8
+        ]
+      ],
+      "checks": [
+        {
+          "point": "华东",
+          "hit": true,
+          "matched": "华东"
+        },
+        {
+          "point": "1773370.8",
+          "hit": true,
+          "matched": 1773370.8
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.4,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E26",
+      "module": "工单/优先级",
+      "question": "紧急优先级的工单有多少批？",
+      "expected_points": [
+        "645"
+      ],
+      "picked_tables": [
+        "fact_work_order"
+      ],
+      "sql": "SELECT priority AS 优先级,\n       COUNT(*) AS 批次数\nFROM fact_work_order\nWHERE priority = '紧急'\nGROUP BY priority",
+      "columns": [
+        "优先级",
+        "批次数"
+      ],
+      "rows": [
+        [
+          "紧急",
+          645
+        ]
+      ],
+      "checks": [
+        {
+          "point": "645",
+          "hit": true,
+          "matched": 645.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E27",
+      "module": "销售",
+      "question": "8月份正式订单的销售额是多少？",
+      "expected_points": [
+        "958057.8"
+      ],
+      "picked_tables": [
+        "fact_sales_order",
+        "fact_sales_order_item",
+        "dim_customer",
+        "dim_product"
+      ],
+      "sql": "SELECT ROUND(SUM(i.order_qty * i.unit_price), 2) AS amount\nFROM fact_sales_order o\nJOIN fact_sales_order_item i ON i.order_id = o.order_id\nWHERE o.order_type = '正式单'\n  AND o.order_date >= '2026-08-01'\n  AND o.order_date <= '2026-08-31'",
+      "columns": [
+        "amount"
+      ],
+      "rows": [
+        [
+          958057.8
+        ]
+      ],
+      "checks": [
+        {
+          "point": "958057.8",
+          "hit": true,
+          "matched": 958057.8
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E28",
+      "module": "质量/返工",
+      "question": "本月返工排板数占投入的比例是多少？",
+      "expected_points": [
+        "512",
+        "156141",
+        "0.0033或0.33"
+      ],
+      "picked_tables": [
+        "fact_process_record",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "SELECT SUM(rework_panels) AS rework_panels,\n       SUM(input_panels) AS input_panels,\n       ROUND(SUM(rework_panels) * 1.0 / SUM(input_panels), 4) AS rework_rate\nFROM fact_process_record\nWHERE is_rework_pass = 0\n  AND date(out_time) >= date('2026-09-24', 'start of month')",
+      "columns": [
+        "rework_panels",
+        "input_panels",
+        "rework_rate"
+      ],
+      "rows": [
+        [
+          512,
+          156141,
+          0.0033
+        ]
+      ],
+      "checks": [
+        {
+          "point": "512",
+          "hit": true,
+          "matched": 512.0
+        },
+        {
+          "point": "156141",
+          "hit": true,
+          "matched": 156141.0
+        },
+        {
+          "point": "0.0033或0.33",
+          "hit": true,
+          "matched": 0.0033
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.4,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E29",
+      "module": "质量/FPY",
+      "question": "P01这道工序的一次通过率是多少？",
+      "expected_points": [
+        "P01",
+        "0.9816"
+      ],
+      "picked_tables": [
+        "dim_process",
+        "fact_process_record",
+        "fact_work_order"
+      ],
+      "sql": "SELECT pr.process_id,\n       pr.process_name,\n       SUM(p.input_panels) AS input_panels,\n       SUM(p.good_panels) AS good_panels,\n       ROUND(SUM(p.good_panels) * 1.0 / SUM(p.input_panels), 4) AS fpy\nFROM fact_process_record p\nJOIN fact_work_order w ON w.lot_id = p.lot_id\nJOIN dim_process pr ON pr.process_id = p.process_id\nWHERE p.process_id = 'P01'\n  AND w.lot_status = '已完工'\n  AND p.is_rework_pass = 0\nGROUP BY pr.process_id, pr.process_name",
+      "columns": [
+        "process_id",
+        "process_name",
+        "input_panels",
+        "good_panels",
+        "fpy"
+      ],
+      "rows": [
+        [
+          "P01",
+          "内层线路",
+          46291,
+          45438,
+          0.9816
+        ]
+      ],
+      "checks": [
+        {
+          "point": "P01",
+          "hit": true,
+          "matched": "P01"
+        },
+        {
+          "point": "0.9816",
+          "hit": true,
+          "matched": 0.9816
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.6,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E30",
+      "module": "客诉",
+      "question": "目前还在处理中的客诉有多少起？",
+      "expected_points": [
+        "10"
+      ],
+      "picked_tables": [
+        "fact_customer_complaint",
+        "dim_customer",
+        "dim_product"
+      ],
+      "sql": "SELECT COUNT(*) AS 处理中客诉数\nFROM fact_customer_complaint\nWHERE status = '处理中'",
+      "columns": [
+        "处理中客诉数"
+      ],
+      "rows": [
+        [
+          10
+        ]
+      ],
+      "checks": [
+        {
+          "point": "10",
+          "hit": true,
+          "matched": 10.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 0.8,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E31",
+      "module": "质量/RTY",
+      "question": "RF类产品的RTY是多少？",
+      "expected_points": [
+        "RF",
+        "0.8397"
+      ],
+      "picked_tables": [
+        "dim_product",
+        "fact_process_record",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "WITH fpy AS (\n  SELECT p.lot_id,\n         p.process_id,\n         p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n)\nSELECT pr.product_type,\n       COUNT(*) AS lot_cnt,\n       ROUND(AVG(r.rty), 4) AS avg_rty\nFROM lot_rty r\nJOIN fact_work_order w ON w.lot_id = r.lot_id\nJOIN dim_product pr ON pr.product_id = w.product_id\nWHERE pr.product_type = 'RF'\nGROUP BY pr.product_type",
+      "columns": [
+        "product_type",
+        "lot_cnt",
+        "avg_rty"
+      ],
+      "rows": [
+        [
+          "RF",
+          110,
+          0.8397
+        ]
+      ],
+      "checks": [
+        {
+          "point": "RF",
+          "hit": true,
+          "matched": "RF"
+        },
+        {
+          "point": "0.8397",
+          "hit": true,
+          "matched": 0.8397
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 2.5,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E32",
+      "module": "质量/RTY",
+      "question": "RTY平均水平最高的是哪类产品、多少？",
+      "expected_points": [
+        "WBCSP",
+        "0.8401"
+      ],
+      "picked_tables": [
+        "fact_process_record",
+        "dim_product",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "WITH fpy AS (\n  SELECT p.lot_id,\n         p.process_id,\n         p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n)\nSELECT pr.product_type,\n       COUNT(*) AS lot_cnt,\n       ROUND(AVG(r.rty), 4) AS avg_rty\nFROM lot_rty r\nJOIN fact_work_order w ON w.lot_id = r.lot_id\nJOIN dim_product pr ON pr.product_id = w.product_id\nGROUP BY pr.product_type\nORDER BY avg_rty DESC\nLIMIT 1",
+      "columns": [
+        "product_type",
+        "lot_cnt",
+        "avg_rty"
+      ],
+      "rows": [
+        [
+          "WBCSP",
+          224,
+          0.8401
+        ]
+      ],
+      "checks": [
+        {
+          "point": "WBCSP",
+          "hit": true,
+          "matched": "WBCSP"
+        },
+        {
+          "point": "0.8401",
+          "hit": true,
+          "matched": 0.8401
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 13.6,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E33",
+      "module": "质量/电测",
+      "question": "本月电测通过率是多少？",
+      "expected_points": [
+        "5031",
+        "4907",
+        "0.9754或97.54"
+      ],
+      "picked_tables": [
+        "fact_etest",
+        "dim_process"
+      ],
+      "sql": "SELECT COUNT(*) AS test_lots,\n       SUM(tested_panels) AS tested_panels,\n       SUM(pass_panels) AS pass_panels,\n       ROUND(SUM(pass_panels) * 1.0 / SUM(tested_panels), 4) AS pass_rate,\n       ROUND((SUM(tested_panels) - SUM(pass_panels)) * 1.0 / SUM(tested_panels) * 1000000, 0) AS dppm\nFROM fact_etest\nWHERE date(test_time) >= date('2026-09-24', 'start of month')",
+      "columns": [
+        "test_lots",
+        "tested_panels",
+        "pass_panels",
+        "pass_rate",
+        "dppm"
+      ],
+      "rows": [
+        [
+          183,
+          5031,
+          4907,
+          0.9754,
+          24647.0
+        ]
+      ],
+      "checks": [
+        {
+          "point": "5031",
+          "hit": true,
+          "matched": 5031.0
+        },
+        {
+          "point": "4907",
+          "hit": true,
+          "matched": 4907.0
+        },
+        {
+          "point": "0.9754或97.54",
+          "hit": true,
+          "matched": 0.9754
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.7,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E34",
+      "module": "质量/缺陷",
+      "question": "孔类缺陷一共有多少个？",
+      "expected_points": [
+        "1417"
+      ],
+      "picked_tables": [
+        "fact_defect",
+        "dim_defect_code",
+        "dim_process"
+      ],
+      "sql": "SELECT dc.defect_category,\n       SUM(d.defect_qty) AS defect_qty\nFROM fact_defect d\nJOIN dim_defect_code dc ON dc.defect_code = d.defect_code\nWHERE dc.defect_category = '孔'\nGROUP BY dc.defect_category",
+      "columns": [
+        "defect_category",
+        "defect_qty"
+      ],
+      "rows": [
+        [
+          "孔",
+          1417
+        ]
+      ],
+      "checks": [
+        {
+          "point": "1417",
+          "hit": true,
+          "matched": 1417.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 0.9,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E35",
+      "module": "质量/报废",
+      "question": "8月份的报废率是多少？",
+      "expected_points": [
+        "0.0082或0.82"
+      ],
+      "picked_tables": [
+        "fact_process_record",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "SELECT SUM(scrap_panels) AS scrap_panels,\n       SUM(input_panels) AS input_panels,\n       ROUND(SUM(scrap_panels) * 1.0 / SUM(input_panels), 4) AS scrap_rate\nFROM fact_process_record\nWHERE is_rework_pass = 0\n  AND date(out_time) >= '2026-08-01'\n  AND date(out_time) < '2026-09-01'",
+      "columns": [
+        "scrap_panels",
+        "input_panels",
+        "scrap_rate"
+      ],
+      "rows": [
+        [
+          1737,
+          211783,
+          0.0082
+        ]
+      ],
+      "checks": [
+        {
+          "point": "0.0082或0.82",
+          "hit": true,
+          "matched": 0.0082
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.5,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E36",
+      "module": "质量/返工",
+      "question": "返工后重过站的记录一共有多少条？",
+      "expected_points": [
+        "1391"
+      ],
+      "picked_tables": [
+        "fact_process_record",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "SELECT COUNT(*) AS rework_pass_records\nFROM fact_process_record\nWHERE is_rework_pass = 1",
+      "columns": [
+        "rework_pass_records"
+      ],
+      "rows": [
+        [
+          1391
+        ]
+      ],
+      "checks": [
+        {
+          "point": "1391",
+          "hit": true,
+          "matched": 1391.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.8,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E37",
+      "module": "交付/OTD",
+      "question": "全期的准时交付率是多少？",
+      "expected_points": [
+        "165",
+        "301",
+        "0.5482或54.82"
+      ],
+      "picked_tables": [
+        "fact_shipment",
+        "fact_sales_order",
+        "fact_sales_order_item",
+        "dim_customer"
+      ],
+      "sql": "SELECT COUNT(*) AS ship_cnt,\n       SUM(CASE WHEN s.ship_date <= d.due_date THEN 1 ELSE 0 END) AS on_time_cnt,\n       ROUND(SUM(CASE WHEN s.ship_date <= d.due_date THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4) AS otd\nFROM fact_shipment s\nJOIN (\n  SELECT order_id, MIN(due_date) AS due_date\n  FROM fact_sales_order_item\n  GROUP BY order_id\n) d ON d.order_id = s.order_id",
+      "columns": [
+        "ship_cnt",
+        "on_time_cnt",
+        "otd"
+      ],
+      "rows": [
+        [
+          301,
+          165,
+          0.5482
+        ]
+      ],
+      "checks": [
+        {
+          "point": "165",
+          "hit": true,
+          "matched": 165.0
+        },
+        {
+          "point": "301",
+          "hit": true,
+          "matched": 301.0
+        },
+        {
+          "point": "0.5482或54.82",
+          "hit": true,
+          "matched": 0.5482
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.4,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E38",
+      "module": "交付/出货",
+      "question": "7月份一共出货了多少批？",
+      "expected_points": [
+        "28"
+      ],
+      "picked_tables": [
+        "fact_shipment",
+        "fact_work_order",
+        "fact_sales_order",
+        "fact_sales_order_item"
+      ],
+      "sql": "SELECT COUNT(*) AS ship_cnt\nFROM fact_shipment\nWHERE ship_date >= '2026-07-01'\n  AND ship_date < '2026-08-01'",
+      "columns": [
+        "ship_cnt"
+      ],
+      "rows": [
+        [
+          28
+        ]
+      ],
+      "checks": [
+        {
+          "point": "28",
+          "hit": true,
+          "matched": 28.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E39",
+      "module": "交付/出货",
+      "question": "海思半导体累计出货过多少批？",
+      "expected_points": [
+        "24"
+      ],
+      "picked_tables": [
+        "fact_shipment",
+        "fact_work_order",
+        "fact_sales_order",
+        "fact_sales_order_item"
+      ],
+      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       COUNT(DISTINCT s.shipment_id) AS ship_batches\nFROM fact_shipment s\nJOIN dim_customer c ON c.customer_id = s.customer_id\nWHERE c.customer_name = '海思半导体'\nGROUP BY c.customer_id, c.customer_name",
+      "columns": [
+        "customer_id",
+        "customer_name",
+        "ship_batches"
+      ],
+      "rows": [
+        [
+          "C001",
+          "海思半导体",
+          24
+        ]
+      ],
+      "checks": [
+        {
+          "point": "24",
+          "hit": true,
+          "matched": 24.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.4,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E40",
+      "module": "交付/OTD",
+      "question": "全期延迟交付的批次一共有多少？",
+      "expected_points": [
+        "136"
+      ],
+      "picked_tables": [
+        "fact_shipment",
+        "fact_work_order",
+        "fact_sales_order",
+        "fact_sales_order_item"
+      ],
+      "sql": "SELECT COUNT(*) AS late_ship_cnt\nFROM fact_shipment s\nJOIN (\n  SELECT order_id, MIN(due_date) AS due_date\n  FROM fact_sales_order_item\n  GROUP BY order_id\n) d ON d.order_id = s.order_id\nWHERE s.ship_date > d.due_date",
+      "columns": [
+        "late_ship_cnt"
+      ],
+      "rows": [
+        [
+          136
+        ]
+      ],
+      "checks": [
+        {
+          "point": "136",
+          "hit": true,
+          "matched": 136.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.3,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E41",
+      "module": "财务/应收",
+      "question": "应收账款台账上的金额合计是多少（包含已结清的账款）？",
+      "expected_points": [
+        "2193000.27"
+      ],
+      "picked_tables": [
+        "fact_receivable",
+        "dim_customer"
+      ],
+      "sql": "SELECT COUNT(*) AS 账单笔数,\n       ROUND(SUM(amount), 2) AS 应收金额合计,\n       ROUND(SUM(received_amount), 2) AS 已收金额合计,\n       ROUND(SUM(amount - received_amount), 2) AS 未收余额合计\nFROM fact_receivable",
+      "columns": [
+        "账单笔数",
+        "应收金额合计",
+        "已收金额合计",
+        "未收余额合计"
+      ],
+      "rows": [
+        [
+          301,
+          2193000.27,
+          1454402.2,
+          738598.07
+        ]
+      ],
+      "checks": [
+        {
+          "point": "2193000.27",
+          "hit": true,
+          "matched": 2193000.27
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.6,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E42",
+      "module": "财务/应收",
+      "question": "已经结清的应收账款有多少笔？",
+      "expected_points": [
+        "202"
+      ],
+      "picked_tables": [
+        "fact_receivable",
+        "dim_customer"
+      ],
+      "sql": "SELECT COUNT(*) AS settled_bills,\n       ROUND(SUM(amount), 2) AS settled_amount\nFROM fact_receivable\nWHERE status = '已结清'",
+      "columns": [
+        "settled_bills",
+        "settled_amount"
+      ],
+      "rows": [
+        [
+          202,
+          1454402.2
+        ]
+      ],
+      "checks": [
+        {
+          "point": "202",
+          "hit": true,
+          "matched": 202.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.3,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E43",
+      "module": "设备/停机",
+      "question": "设备故障导致的停机有多少次、共多少分钟？",
+      "expected_points": [
+        "4",
+        "420"
+      ],
+      "picked_tables": [
+        "fact_equipment_downtime",
+        "dim_equipment"
+      ],
+      "sql": "SELECT COUNT(*) AS 故障停机次数,\n       SUM(duration_min) AS 故障停机总分钟\nFROM fact_equipment_downtime\nWHERE reason = '故障'",
+      "columns": [
+        "故障停机次数",
+        "故障停机总分钟"
+      ],
+      "rows": [
+        [
+          4,
+          420
+        ]
+      ],
+      "checks": [
+        {
+          "point": "4",
+          "hit": true,
+          "matched": 4.0
+        },
+        {
+          "point": "420",
+          "hit": true,
+          "matched": 420.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.4,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E44",
+      "module": "生产/班次",
+      "question": "夜班一共产生了多少条过站记录？",
+      "expected_points": [
+        "16053"
+      ],
+      "picked_tables": [
+        "fact_process_record",
+        "dim_shift",
+        "dim_process",
+        "fact_work_order"
+      ],
+      "sql": "SELECT s.shift_name AS 班次,\n       COUNT(*) AS 过站记录数\nFROM fact_process_record p\nJOIN dim_shift s ON s.shift_id = p.shift_id\nWHERE s.shift_name = '夜班'\nGROUP BY s.shift_name",
+      "columns": [
+        "班次",
+        "过站记录数"
+      ],
+      "rows": [
+        [
+          "夜班",
+          16053
+        ]
+      ],
+      "checks": [
+        {
+          "point": "16053",
+          "hit": true,
+          "matched": 16053.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 2.0,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E45",
+      "module": "设备",
+      "question": "当前处于维修状态的设备有几台？",
+      "expected_points": [
+        "13"
+      ],
+      "picked_tables": [
+        "dim_equipment"
+      ],
+      "sql": "SELECT COUNT(*) AS 维修中设备台数\nFROM dim_equipment\nWHERE status = '维修'",
+      "columns": [
+        "维修中设备台数"
+      ],
+      "rows": [
+        [
+          13
+        ]
+      ],
+      "checks": [
+        {
+          "point": "13",
+          "hit": true,
+          "matched": 13.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E46",
+      "module": "客诉",
+      "question": "客户客诉总共有多少起？",
+      "expected_points": [
+        "28"
+      ],
+      "picked_tables": [
+        "dim_customer",
+        "fact_customer_complaint",
+        "dim_product"
+      ],
+      "sql": "SELECT COUNT(*) AS complaint_cnt\nFROM fact_customer_complaint",
+      "columns": [
+        "complaint_cnt"
+      ],
+      "rows": [
+        [
+          28
+        ]
+      ],
+      "checks": [
+        {
+          "point": "28",
+          "hit": true,
+          "matched": 28.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.1,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E47",
+      "module": "客诉",
+      "question": "DPPM最高的一次客诉是哪个客户、多少DPPM？",
+      "expected_points": [
+        "海思半导体",
+        "178"
+      ],
+      "picked_tables": [
+        "fact_customer_complaint",
+        "dim_customer",
+        "dim_material",
+        "dim_product"
+      ],
+      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       x.complaint_id,\n       x.complaint_date,\n       x.dppm\nFROM fact_customer_complaint x\nJOIN dim_customer c ON c.customer_id = x.customer_id\nORDER BY x.dppm DESC\nLIMIT 1",
+      "columns": [
+        "customer_id",
+        "customer_name",
+        "complaint_id",
+        "complaint_date",
+        "dppm"
+      ],
+      "rows": [
+        [
+          "C001",
+          "海思半导体",
+          "CC0018",
+          "2026-08-05",
+          178
+        ]
+      ],
+      "checks": [
+        {
+          "point": "海思半导体",
+          "hit": true,
+          "matched": "海思半导体"
+        },
+        {
+          "point": "178",
+          "hit": true,
+          "matched": 178.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.5,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E48",
+      "module": "库存",
+      "question": "成品库存总共有多少颗？",
+      "expected_points": [
+        "2823720"
+      ],
+      "picked_tables": [
+        "fact_inventory",
+        "dim_material"
+      ],
+      "sql": "SELECT '成品' AS stock_type,\n       SUM(qty_on_hand) AS qty_on_hand\nFROM fact_inventory\nWHERE stock_type = '成品'",
+      "columns": [
+        "stock_type",
+        "qty_on_hand"
+      ],
+      "rows": [
+        [
+          "成品",
+          2823720
+        ]
+      ],
+      "checks": [
+        {
+          "point": "2823720",
+          "hit": true,
+          "matched": 2823720.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 3.0,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E49",
+      "module": "库存",
+      "question": "全部原料的库存总金额是多少？",
+      "expected_points": [
+        "1090012.85"
+      ],
+      "picked_tables": [
+        "dim_material",
+        "fact_inventory"
+      ],
+      "sql": "SELECT ROUND(SUM(i.qty_on_hand * COALESCE(m.standard_cost, 0)), 2) AS 原料库存总金额\nFROM fact_inventory i\nJOIN dim_material m ON m.material_id = i.material_id\nWHERE i.stock_type = '原料'",
+      "columns": [
+        "原料库存总金额"
+      ],
+      "rows": [
+        [
+          1090012.85
+        ]
+      ],
+      "checks": [
+        {
+          "point": "1090012.85",
+          "hit": true,
+          "matched": 1090012.85
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.1,
+      "model": "deepseek-chat"
+    },
+    {
+      "id": "E50",
+      "module": "质量/缺陷",
+      "question": "AOI检出的缺陷总数量是多少？",
+      "expected_points": [
+        "1421"
+      ],
+      "picked_tables": [
+        "fact_defect",
+        "dim_defect_code",
+        "dim_process"
+      ],
+      "sql": "SELECT SUM(defect_qty) AS aoi_defect_qty\nFROM fact_defect\nWHERE detect_method = 'AOI'",
+      "columns": [
+        "aoi_defect_qty"
+      ],
+      "rows": [
+        [
+          1421
+        ]
+      ],
+      "checks": [
+        {
+          "point": "1421",
+          "hit": true,
+          "matched": 1421.0
+        }
+      ],
+      "passed": true,
+      "stage": "executed",
+      "error": null,
+      "elapsed_sec": 1.2,
+      "model": "deepseek-chat"
+    }
+  ]
+}

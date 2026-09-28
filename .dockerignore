@@ -1,0 +1,16 @@
+# 虚拟环境与缓存不入镜像（依赖由 requirements.lock 在镜像内全新安装）
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 密钥与运行期数据不入镜像（.env 由 env_file 注入，data 由卷挂载）
+.env
+data/
+
+# 版本控制与临时文件
+.git/
+.gitignore
+*.tmp
+~$*

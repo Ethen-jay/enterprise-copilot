@@ -1,0 +1,51 @@
+# ============================================================
+# enterprise-copilot 合并依赖（F1）
+# 直接依赖下限；可复现安装请用 pip install -r requirements.lock
+# lock 版本取自三系统已跑通的环境（Python 3.11 / myenv）
+# ============================================================
+
+# ===== Web 框架 =====
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# ===== LangChain 编排（rag_qa / doc_agent） =====
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+langchain-chroma>=0.1.0
+langchain-openai>=0.1.0
+langchain-text-splitters>=0.2.0
+langgraph>=0.2.0
+
+# ===== 向量库 =====
+chromadb>=0.5.0
+
+# ===== 文档解析与转换（doc_agent + 规则快速通道） =====
+PyMuPDF>=1.24.0
+pdfplumber>=0.11.0
+python-docx>=1.1.0
+openpyxl>=3.1.0
+markdown>=3.5.0
+markdownify>=0.12.0
+pypandoc>=1.13.0
+weasyprint>=60.0
+fpdf2>=2.7.0
+
+# ===== 中文分词（反思校验关键词提取） =====
+jieba>=0.42.1
+
+# ===== HTTP 客户端 =====
+httpx>=0.27.0
+requests>=2.31.0
+
+# ===== Text-to-SQL（原 erp-mes-copilot 依赖，F1 并入） =====
+openai>=1.40.0
+sqlparse>=0.4.4
+
+# ===== 测试 =====
+pytest>=8.0.0
+pytest-asyncio>=0.24.0

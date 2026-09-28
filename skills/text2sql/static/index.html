@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IC载板 ERP+MES 数据查询助手</title>
+<style>
+  /* ---------- 全局：朴素的工厂后台风格，无外部依赖 ---------- */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+    background: #f2f4f7; color: #1f2933; line-height: 1.6;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 60px; }
+
+  header { display: flex; align-items: center; justify-content: space-between;
+           flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  header h1 { font-size: 22px; font-weight: 700; }
+  header h1 .sub { font-size: 13px; color: #6b7280; font-weight: 400; margin-left: 10px; }
+  .badge { font-size: 12px; padding: 3px 10px; border-radius: 12px; background: #e5e7eb; color: #374151; }
+  .badge.ok { background: #dcfce7; color: #166534; }
+  .badge.bad { background: #fee2e2; color: #991b1b; }
+
+  /* ---------- 提问区 ---------- */
+  .ask-box { background: #fff; border-radius: 10px; padding: 18px;
+             box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .ask-row { display: flex; gap: 10px; }
+  #question { flex: 1; padding: 11px 14px; font-size: 15px; border: 1px solid #cbd2d9;
+              border-radius: 8px; outline: none; }
+  #question:focus { border-color: #2563eb; }
+  #askBtn { padding: 11px 26px; font-size: 15px; color: #fff; background: #2563eb;
+            border: none; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+  #askBtn:hover { background: #1d4ed8; }
+  #askBtn:disabled { background: #93b4f5; cursor: not-allowed; }
+  .examples { margin-top: 10px; font-size: 13px; color: #6b7280; }
+  .examples button { margin: 4px 6px 0 0; padding: 4px 12px; font-size: 13px; color: #2563eb;
+                     background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 14px;
+                     cursor: pointer; }
+  .examples button:hover { background: #dbeafe; }
+
+  /* ---------- 结果区 ---------- */
+  #result { margin-top: 18px; }
+  .card { background: #fff; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card h3 { font-size: 14px; color: #6b7280; font-weight: 600; margin-bottom: 8px; }
+  .explain { font-size: 15px; }
+  .chips span { display: inline-block; margin: 0 6px 6px 0; padding: 2px 10px; font-size: 12px;
+                background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 10px;
+                font-family: Consolas, monospace; color: #334155; }
+  pre.sql { background: #0f172a; color: #e2e8f0; padding: 14px 16px; border-radius: 8px;
+            font-family: Consolas, "Courier New", monospace; font-size: 13px;
+            overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  .error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+           padding: 12px 14px; border-radius: 8px; font-size: 14px; }
+  .warn { font-size: 12px; color: #92400e; background: #fffbeb; border: 1px solid #fde68a;
+          padding: 8px 12px; border-radius: 8px; margin-top: 8px; }
+  .meta { font-size: 13px; color: #6b7280; margin-bottom: 8px; }
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e7eb; padding: 7px 12px; text-align: left; white-space: nowrap; }
+  th { background: #f8fafc; font-weight: 600; color: #334155; position: sticky; top: 0; }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  tbody tr:hover { background: #eff6ff; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .loading { color: #2563eb; font-size: 14px; padding: 20px 0; text-align: center; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>IC载板 ERP+MES 数据查询助手
+      <span class="sub">自然语言提问 · 只读取数 · 基准日 2026-09-24</span>
+    </h1>
+    <span id="healthBadge" class="badge">正在检查服务…</span>
+  </header>
+
+  <!-- 提问区 -->
+  <div class="ask-box">
+    <div class="ask-row">
+      <input id="question" type="text" placeholder="例如：当前在制工单有多少批？" autocomplete="off">
+      <button id="askBtn">提 问</button>
+    </div>
+    <div class="examples">
+      试试：
+      <button data-q="当前在制工单有多少批？">在制批数</button>
+      <button data-q="各客户正式订单销售额排名">客户销售额排名</button>
+      <button data-q="本月准时交付率是多少？">本月OTD</button>
+      <button data-q="工单260600002的整体RTY是多少？">单工单RTY</button>
+      <button data-q="本月报废率是多少？">本月报废率</button>
+    </div>
+  </div>
+
+  <!-- 结果区 -->
+  <div id="result"></div>
+</div>
+
+<script>
+"use strict";
+
+var questionEl = document.getElementById("question");
+var askBtn = document.getElementById("askBtn");
+var resultEl = document.getElementById("result");
+var healthBadge = document.getElementById("healthBadge");
+
+/* ---------- 工具：转义 HTML，防结果里的特殊字符破坏页面 ---------- */
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/* ---------- 简单判断列是否像数值（右对齐） ---------- */
+function isNumericColumn(name, rows, colIdx) {
+  if (rows.length === 0) return false;
+  var numericLike = /qty|amount|price|rate|rty|fpy|count|num|金额|数量|率|颗|批|排板|分钟|天$/i;
+  if (numericLike.test(name)) return true;
+  return rows.slice(0, 5).every(function (r) {
+    return r[colIdx] === null || r[colIdx] === "" || !isNaN(Number(r[colIdx]));
+  });
+}
+
+/* ---------- 渲染结果 ---------- */
+function render(data) {
+  var html = "";
+
+  // 错误（无法回答 / 守卫拒绝 / 执行失败）
+  if (data.error) {
+    html += '<div class="card"><div class="error">' + esc(data.error) + "</div></div>";
+  }
+
+  // 口径说明
+  if (data.explanation) {
+    html += '<div class="card"><h3>口径说明</h3><div class="explain">' +
+            esc(data.explanation).replace(/\n/g, "<br>") + "</div></div>";
+  }
+
+  // 选中的表
+  if (data.picked_tables && data.picked_tables.length) {
+    html += '<div class="card"><h3>命中数据表（Schema Linking）</h3><div class="chips">';
+    data.picked_tables.forEach(function (t) { html += "<span>" + esc(t) + "</span>"; });
+    html += "</div></div>";
+  }
+
+  // SQL
+  if (data.sql) {
+    html += '<div class="card"><h3>生成的 SQL（已通过只读守卫）</h3><pre class="sql">' +
+            esc(data.sql) + "</pre>";
+    if (data.warnings && data.warnings.length) {
+      data.warnings.forEach(function (w) {
+        html += '<div class="warn">⚠ ' + esc(w) + "</div>";
+      });
+    }
+    html += "</div>";
+  }
+
+  // 结果表格
+  if (data.columns && data.columns.length) {
+    html += '<div class="card"><h3>查询结果</h3>' +
+            '<div class="meta">共 ' + data.row_count + " 行" +
+            (data.model ? "　模型：" + esc(data.model) : "") +
+            (data.truncated ? "　（结果过多已截断展示）" : "") + "</div>";
+    html += '<div class="table-scroll"><table><thead><tr>';
+    data.columns.forEach(function (c, i) {
+      var cls = isNumericColumn(c, data.rows, i) ? ' class="num"' : "";
+      html += "<th" + cls + ">" + esc(c) + "</th>";
+    });
+    html += "</tr></thead><tbody>";
+    data.rows.forEach(function (row) {
+      html += "<tr>";
+      row.forEach(function (v, i) {
+        var cls = isNumericColumn(data.columns[i], data.rows, i) ? ' class="num"' : "";
+        html += "<td" + cls + ">" + (v === null ? "<em>NULL</em>" : esc(v)) + "</td>";
+      });
+      html += "</tr>";
+    });
+    html += "</tbody></table></div></div>";
+  }
+
+  resultEl.innerHTML = html || '<div class="card">没有可展示的结果。</div>';
+}
+
+/* ---------- 发起提问 ---------- */
+function ask() {
+  var q = questionEl.value.trim();
+  if (!q) { questionEl.focus(); return; }
+
+  askBtn.disabled = true;
+  askBtn.textContent = "查询中…";
+  resultEl.innerHTML = '<div class="card"><div class="loading">正在选表、生成并校验 SQL，请稍候…</div></div>';
+
+  fetch("/ask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question: q })
+  })
+    .then(function (resp) {
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return resp.json();
+    })
+    .then(render)
+    .catch(function (err) {
+      resultEl.innerHTML = '<div class="card"><div class="error">请求失败：' +
+                           esc(err.message) + "<br>请确认后端服务已启动（端口 8010）。</div></div>";
+    })
+    .then(function () {
+      askBtn.disabled = false;
+      askBtn.textContent = "提 问";
+    });
+}
+
+/* ---------- 健康检查 ---------- */
+function checkHealth() {
+  fetch("/health").then(function (r) { return r.json(); }).then(function (h) {
+    if (h.status === "ok") {
+      healthBadge.className = "badge ok";
+      healthBadge.textContent = "● 服务正常 · " + h.database.tables + " 张表 · 账龄快照 " + h.snapshot_date;
+    } else {
+      healthBadge.className = "badge bad";
+      healthBadge.textContent = "● 配置不完整（见 /health）";
+    }
+  }).catch(function () {
+    healthBadge.className = "badge bad";
+    healthBadge.textContent = "● 后端未连接";
+  });
+}
+
+/* ---------- 事件绑定 ---------- */
+askBtn.addEventListener("click", ask);
+questionEl.addEventListener("keydown", function (e) { if (e.key === "Enter") ask(); });
+Array.prototype.forEach.call(document.querySelectorAll(".examples button"), function (btn) {
+  btn.addEventListener("click", function () {
+    questionEl.value = btn.getAttribute("data-q");
+    ask();
+  });
+});
+
+checkHealth();
+</script>
+</body>
+</html>

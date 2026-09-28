@@ -1,0 +1,17 @@
+# 密钥与运行期数据（F1 强制：.env 与 data/ 不入库）
+.env
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 临时与系统文件
+*.tmp
+~$*

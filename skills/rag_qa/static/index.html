@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能文档助手</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Microsoft YaHei", sans-serif;
+    background: #f5f5f7;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    color: white;
+    padding: 14px 24px;
+    font-size: 18px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tabs {
+    display: flex;
+    background: white;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 0 24px;
+    gap: 4px;
+  }
+  .tab {
+    padding: 12px 20px;
+    cursor: pointer;
+    font-size: 14px;
+    color: #6b7280;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+  }
+  .tab:hover { color: #2563eb; }
+  .tab.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 600; }
+  .tab-content { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+  .tab-content.active { display: flex; }
+
+  /* ---- 知识问答 ---- */
+  .upload-bar {
+    background: white;
+    padding: 12px 24px;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .upload-bar input[type=file] { display: none; }
+  .upload-bar label {
+    background: #2563eb;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .upload-bar label:hover { background: #1d4ed8; }
+  .upload-status { font-size: 14px; color: #6b7280; }
+  .upload-status.success { color: #059669; }
+  .upload-status.error { color: #dc2626; }
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .msg { max-width: 75%; padding: 12px 16px; border-radius: 12px; line-height: 1.6; word-break: break-word; }
+  .msg.user { background: #2563eb; color: white; align-self: flex-end; border-bottom-right-radius: 4px; }
+  .msg.assistant { background: white; color: #1f2937; align-self: flex-start; border-bottom-left-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+  .citations { margin-top: 8px; font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb; padding-top: 8px; }
+  .citations span { display: inline-block; background: #f3f4f6; padding: 2px 8px; border-radius: 4px; margin-right: 6px; margin-top: 4px; }
+  .input-bar {
+    background: white;
+    padding: 16px 24px;
+    border-top: 1px solid #e5e7eb;
+    display: flex;
+    gap: 12px;
+  }
+  .input-bar textarea {
+    flex: 1;
+    padding: 10px 14px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    resize: none;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+  }
+  .input-bar textarea:focus { border-color: #2563eb; }
+  .input-bar button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    padding: 0 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .input-bar button:hover { background: #1d4ed8; }
+  .input-bar button:disabled { background: #9ca3af; cursor: not-allowed; }
+  .loading { color: #9ca3af; font-style: italic; }
+
+  /* ---- 文档转换 ---- */
+  .convert-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 32px 24px;
+    max-width: 720px;
+    margin: 0 auto;
+    width: 100%;
+  }
+  .convert-card {
+    background: white;
+    border-radius: 12px;
+    padding: 32px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .convert-card h3 { font-size: 16px; margin-bottom: 20px; color: #1f2937; }
+  .form-group { margin-bottom: 20px; }
+  .form-group label { display: block; font-size: 14px; color: #374151; margin-bottom: 6px; font-weight: 500; }
+  .form-group input[type=file] {
+    width: 100%;
+    padding: 10px;
+    border: 1px dashed #d1d5db;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .form-group input[type=file]:hover { border-color: #2563eb; }
+  .form-group textarea {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 60px;
+    outline: none;
+  }
+  .form-group textarea:focus { border-color: #2563eb; }
+  .quick-flags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .quick-flags button {
+    padding: 6px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: white;
+    cursor: pointer;
+    font-size: 13px;
+    color: #374151;
+  }
+  .quick-flags button:hover { border-color: #2563eb; color: #2563eb; }
+  .convert-btn {
+    width: 100%;
+    background: #7c3aed;
+    color: white;
+    border: none;
+    padding: 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .convert-btn:hover { background: #6d28d9; }
+  .convert-btn:disabled { background: #9ca3af; cursor: not-allowed; }
+  .convert-result {
+    margin-top: 20px;
+    padding: 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    display: none;
+  }
+  .convert-result.ok { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; display: block; }
+  .convert-result.err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; display: block; }
+  .convert-result .download-link {
+    display: inline-block;
+    margin-top: 10px;
+    color: #2563eb;
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .convert-result .download-link:hover { text-decoration: underline; }
+  .convert-result .meta { margin-top: 8px; font-size: 12px; color: #6b7280; }
+</style>
+</head>
+<body>
+  <header>🤖 智能文档助手</header>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('rag')">📚 知识问答</div>
+    <div class="tab" onclick="switchTab('convert')">🔄 文档转换</div>
+  </div>
+
+  <!-- ===== 知识问答 ===== -->
+  <div id="tab-rag" class="tab-content active">
+    <div class="upload-bar">
+      <label for="fileInput">📤 上传文档到知识库</label>
+      <input id="fileInput" type="file" accept=".pdf,.md,.markdown,.txt,.json,.jsonl">
+      <span id="uploadStatus" class="upload-status">支持 PDF / Markdown / TXT / JSON / JSONL</span>
+      <button id="cancelUploadBtn" style="display:none;background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:14px;" onclick="cancelUpload()">取消</button>
+    </div>
+    <div id="progressBar" style="display:none;background:white;padding:0 24px;">
+      <div style="background:#e5e7eb;border-radius:4px;height:6px;overflow:hidden;">
+        <div id="progressFill" style="background:#2563eb;height:100%;width:0%;transition:width 0.3s;"></div>
+      </div>
+    </div>
+    <div id="chat"></div>
+    <div class="input-bar">
+      <textarea id="question" rows="2" placeholder="输入问题，按 Ctrl+Enter 发送..."></textarea>
+      <button id="sendBtn" onclick="sendQuestion()">发送</button>
+    </div>
+  </div>
+
+  <!-- ===== 文档转换 ===== -->
+  <div id="tab-convert" class="tab-content">
+    <div class="convert-area">
+      <div class="convert-card">
+        <h3>📄 文档格式转换</h3>
+        <div class="form-group">
+          <label>上传文件（PDF / Markdown / DOCX / Excel）</label>
+          <input type="file" id="convertFile" accept=".pdf,.md,.markdown,.docx,.html,.xlsx,.xls">
+        </div>
+        <div class="form-group">
+          <label>转换指令</label>
+          <textarea id="instruction" placeholder="例如：把这个 PDF 转成 Markdown，保留表格"></textarea>
+          <div class="quick-flags">
+            <button onclick="setInstruction('转成 Markdown，保留表格')">转 Markdown</button>
+            <button onclick="setInstruction('转成 Word 文档')">转 Word</button>
+            <button onclick="setInstruction('转成 HTML')">转 HTML</button>
+            <button onclick="setInstruction('转成 PDF')">转 PDF</button>
+            <button onclick="setInstruction('转成 Excel')">转 Excel</button>
+            <button onclick="setInstruction('转成 Markdown，并做摘要')">摘要</button>
+          </div>
+        </div>
+        <button class="convert-btn" id="convertBtn" onclick="doConvert()">开始转换</button>
+        <div id="convertResult" class="convert-result"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const AGENT_URL = 'http://localhost:8002';
+
+/* ===== 标签页切换 ===== */
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  if (name === 'rag') {
+    document.querySelectorAll('.tab')[0].classList.add('active');
+    document.getElementById('tab-rag').classList.add('active');
+  } else {
+    document.querySelectorAll('.tab')[1].classList.add('active');
+    document.getElementById('tab-convert').classList.add('active');
+  }
+}
+
+/* ===== 知识问答 ===== */
+const chat = document.getElementById('chat');
+const question = document.getElementById('question');
+const sendBtn = document.getElementById('sendBtn');
+const fileInput = document.getElementById('fileInput');
+const uploadStatus = document.getElementById('uploadStatus');
+let history = [];
+let uploadController = null;
+
+function addMessage(role, text, citations) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  if (citations && citations.length) {
+    const cit = document.createElement('div');
+    cit.className = 'citations';
+    cit.innerHTML = '引用来源：' + citations.map(c =>
+      `<span>${c.file}#${c.chunk}</span>`
+    ).join('');
+    div.appendChild(cit);
+  }
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function cancelUpload() {
+  if (uploadController) {
+    uploadController.abort();
+    uploadController = null;
+  }
+  document.getElementById('cancelUploadBtn').style.display = 'none';
+  document.getElementById('progressBar').style.display = 'none';
+  uploadStatus.textContent = '已取消上传';
+  uploadStatus.className = 'upload-status error';
+  fileInput.value = '';
+}
+
+fileInput.addEventListener('change', async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  const fileSizeMB = (file.size / 1024 / 1024).toFixed(1);
+  uploadStatus.textContent = `上传中（${fileSizeMB}MB）...`;
+  uploadStatus.className = 'upload-status';
+
+  // 显示进度条和取消按钮
+  const progressBar = document.getElementById('progressBar');
+  const progressFill = document.getElementById('progressFill');
+  const cancelBtn = document.getElementById('cancelUploadBtn');
+  progressBar.style.display = 'block';
+  cancelBtn.style.display = 'inline-block';
+  progressFill.style.width = '0%';
+
+  const statusLabels = {
+    'parsing': '正在解析文档...',
+    'splitting': '正在分块处理...',
+    'embedding': '正在向量化（最耗时，请耐心等待）...',
+    'storing': '正在写入向量库...',
+    'done': '入库完成！',
+  };
+
+  // 使用 XMLHttpRequest 上传 + 监听 SSE 进度
+  const xhr = new XMLHttpRequest();
+  uploadController = {
+    abort: () => xhr.abort(),
+  };
+
+  xhr.upload.addEventListener('progress', (e) => {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      progressFill.style.width = pct + '%';
+      if (pct < 100) {
+        uploadStatus.textContent = `上传中 ${pct}%（${fileSizeMB}MB）...`;
+      } else {
+        uploadStatus.textContent = `上传完成，正在解析入库...`;
+        progressFill.style.width = '100%';
+      }
+    }
+  });
+
+  xhr.addEventListener('load', () => {
+    cancelBtn.style.display = 'none';
+    try {
+      // SSE 响应是 text/event-stream，按行解析
+      const lines = xhr.responseText.split('\n');
+      let lastStatus = '';
+      let resultData = null;
+      let errorData = null;
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.substring(6));
+            if (data.status) lastStatus = data.status;
+            if (data.status === 'done') resultData = data.result;
+            if (data.status === 'error') errorData = data.error;
+          } catch (e) {}
+        }
+      }
+
+      progressBar.style.display = 'none';
+
+      if (resultData) {
+        uploadStatus.textContent = `✅ ${resultData.filename} 入库成功，共 ${resultData.chunks} 块`;
+        uploadStatus.className = 'upload-status success';
+      } else if (errorData) {
+        uploadStatus.textContent = `❌ 入库失败: ${errorData}`;
+        uploadStatus.className = 'upload-status error';
+      } else {
+        uploadStatus.textContent = `❌ 未知响应`;
+        uploadStatus.className = 'upload-status error';
+      }
+    } catch (e) {
+      uploadStatus.textContent = `❌ 解析响应失败: ${e.message}`;
+      uploadStatus.className = 'upload-status error';
+    }
+    fileInput.value = '';
+    uploadController = null;
+  });
+
+  xhr.addEventListener('error', () => {
+    cancelBtn.style.display = 'none';
+    progressBar.style.display = 'none';
+    uploadStatus.textContent = `❌ 网络错误`;
+    uploadStatus.className = 'upload-status error';
+    fileInput.value = '';
+    uploadController = null;
+  });
+
+  xhr.addEventListener('abort', () => {
+    progressBar.style.display = 'none';
+    fileInput.value = '';
+    uploadController = null;
+  });
+
+  // 上传过程中根据进度状态更新提示
+  let progressTimer = setInterval(() => {
+    if (uploadController) {
+      // 上传完成后显示处理阶段提示
+      const text = uploadStatus.textContent;
+      if (text.includes('解析入库')) {
+        const dots = '.'.repeat(Math.floor(Date.now() / 500) % 4);
+        uploadStatus.textContent = `正在处理${dots}`;
+      }
+    } else {
+      clearInterval(progressTimer);
+    }
+  }, 500);
+
+  const form = new FormData();
+  form.append('file', file);
+  // 使用流式接口获取实时进度
+  xhr.open('POST', '/ingest/stream');
+  xhr.send(form);
+});
+
+async function sendQuestion() {
+  const q = question.value.trim();
+  if (!q) return;
+  question.value = '';
+  addMessage('user', q);
+  sendBtn.disabled = true;
+
+  const loading = document.createElement('div');
+  loading.className = 'msg assistant loading';
+  loading.textContent = '思考中...';
+  chat.appendChild(loading);
+  chat.scrollTop = chat.scrollHeight;
+
+  try {
+    const resp = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q, history: history })
+    });
+    const data = await resp.json();
+    chat.removeChild(loading);
+    if (resp.ok) {
+      addMessage('assistant', data.answer, data.citations);
+      history.push({ role: 'user', content: q });
+      history.push({ role: 'assistant', content: data.answer });
+    } else {
+      addMessage('assistant', `❌ ${data.detail || '请求失败'}`);
+    }
+  } catch (e) {
+    chat.removeChild(loading);
+    addMessage('assistant', `❌ 网络错误: ${e.message}`);
+  }
+  sendBtn.disabled = false;
+  question.focus();
+}
+
+question.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); sendQuestion(); }
+});
+
+/* ===== 文档转换 ===== */
+const convertFile = document.getElementById('convertFile');
+const instruction = document.getElementById('instruction');
+const convertBtn = document.getElementById('convertBtn');
+const convertResult = document.getElementById('convertResult');
+
+function setInstruction(text) {
+  instruction.value = text;
+}
+
+async function doConvert() {
+  const file = convertFile.files[0];
+  const inst = instruction.value.trim();
+  if (!file) { showConvertResult('err', '请先选择文件'); return; }
+  if (!inst) { showConvertResult('err', '请输入转换指令'); return; }
+
+  convertBtn.disabled = true;
+  convertBtn.textContent = '转换中...';
+  showConvertResult('ok', '⏳ 正在转换，请稍候...');
+
+  const form = new FormData();
+  form.append('file', file);
+  form.append('instruction', inst);
+
+  try {
+    const resp = await fetch(`${AGENT_URL}/convert`, { method: 'POST', body: form });
+    const data = await resp.json();
+
+    if (data.status === 'ok') {
+      const v = data.validation || {};
+      const issues = v.issues && v.issues.length ? `，问题：${v.issues.join('; ')}` : '';
+      const retry = data.retry_count > 0 ? `（重试 ${data.retry_count} 次）` : '';
+      const plan = data.plan || {};
+      let html = `✅ 转换成功${retry}<br>`;
+      html += `<span class="meta">${plan.source_format || ''} → ${plan.target_format || ''}，校验：${v.passed ? '通过' : '未通过'}${issues}</span><br>`;
+      html += `<a class="download-link" href="${AGENT_URL}/download/${data.output_filename}" target="_blank">📥 下载 ${data.output_filename}</a>`;
+      showConvertResult('ok', html, true);
+    } else {
+      const retry = data.retry_count > 0 ? `（重试 ${data.retry_count} 次后仍失败）` : '';
+      showConvertResult('err', `❌ 转换失败${retry}：${data.error || '未知错误'}`);
+    }
+  } catch (e) {
+    showConvertResult('err', `❌ 网络错误: ${e.message}<br><span class="meta">请确认文档转换服务（端口 8002）已启动</span>`);
+  }
+  convertBtn.disabled = false;
+  convertBtn.textContent = '开始转换';
+}
+
+function showConvertResult(type, html, isHtml) {
+  convertResult.className = 'convert-result ' + type;
+  if (isHtml) convertResult.innerHTML = html;
+  else convertResult.textContent = html;
+}
+</script>
+</body>
+</html>

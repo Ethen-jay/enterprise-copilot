@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一体化企业智能助手</title>
+<style>
+  :root {
+    --brand: #4f6ef7;
+    --brand-2: #7c5cfc;
+    --ink: #1e293b;
+    --muted: #64748b;
+    --line: #e6eaf2;
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --ok: #16a34a;
+    --warn: #b45309;
+    --danger: #dc2626;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;
+    background: linear-gradient(180deg, #edf1fb 0%, #f7f9fd 60%);
+    color: var(--ink);
+    line-height: 1.65;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px 72px; }
+
+  /* ---------- 顶部 ---------- */
+  header { display: flex; align-items: center; justify-content: space-between;
+           flex-wrap: wrap; gap: 12px; margin-bottom: 22px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .logo { width: 42px; height: 42px; border-radius: 12px; flex: none;
+          background: linear-gradient(135deg, var(--brand), var(--brand-2));
+          color: #fff; display: flex; align-items: center; justify-content: center;
+          font-size: 18px; font-weight: 700; box-shadow: 0 4px 14px rgba(79,110,247,.35); }
+  header h1 { font-size: 21px; font-weight: 700; letter-spacing: .5px; }
+  header h1 .sub { display: block; font-size: 12px; color: var(--muted);
+                   font-weight: 400; margin-top: 2px; }
+  .head-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .badge { font-size: 12px; padding: 5px 12px; border-radius: 999px; background: #eef1f7;
+           color: var(--muted); font-weight: 500; }
+  .badge.ok { background: #e7f7ec; color: var(--ok); }
+  .badge.bad { background: #fdeaea; color: var(--danger); }
+  .badge .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                margin-right: 6px; background: currentColor; }
+  .key-field { display: flex; align-items: center; gap: 6px; }
+  input[type=password].key { width: 170px; padding: 6px 10px; font-size: 12px;
+      border: 1px solid var(--line); border-radius: 8px; outline: none; background: #fff; }
+  input[type=password].key:focus { border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(79,110,247,.15); }
+
+  /* ---------- 页签 ---------- */
+  .tabs { display: inline-flex; gap: 4px; background: #fff; padding: 5px; border-radius: 13px;
+          box-shadow: 0 2px 10px rgba(15,23,42,.06); margin-bottom: 20px; }
+  .tabs button { padding: 9px 22px; font-size: 15px; border: none; border-radius: 9px;
+                 background: transparent; color: var(--muted); cursor: pointer;
+                 transition: all .18s ease; font-family: inherit; }
+  .tabs button:hover { color: var(--brand); background: #f1f4fd; }
+  .tabs button.active { background: linear-gradient(135deg, var(--brand), var(--brand-2));
+                        color: #fff; font-weight: 600; box-shadow: 0 3px 10px rgba(79,110,247,.32); }
+  .panel { display: none; animation: fade .25s ease; }
+  .panel.active { display: block; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  /* ---------- 输入卡片 ---------- */
+  .box { background: var(--card); border-radius: 16px; padding: 20px;
+         box-shadow: 0 2px 12px rgba(15,23,42,.06); }
+  .row { display: flex; gap: 10px; margin-bottom: 12px; }
+  .row:last-child { margin-bottom: 0; }
+  input[type=text] { flex: 1; padding: 12px 16px; font-size: 15px; border: 1px solid var(--line);
+                     border-radius: 11px; outline: none; background: #fbfcff; transition: all .18s ease; }
+  input[type=text]:focus, textarea:focus { border-color: var(--brand);
+                     background: #fff; box-shadow: 0 0 0 3px rgba(79,110,247,.15); }
+  textarea { width: 100%; padding: 12px 16px; font-size: 15px; border: 1px solid var(--line);
+             border-radius: 11px; outline: none; resize: vertical; min-height: 74px;
+             background: #fbfcff; font-family: inherit; transition: all .18s ease; }
+  .btn { padding: 12px 26px; font-size: 15px; color: #fff; border: none; border-radius: 11px;
+         background: linear-gradient(135deg, var(--brand), var(--brand-2)); cursor: pointer;
+         white-space: nowrap; font-weight: 600; letter-spacing: .5px;
+         box-shadow: 0 4px 12px rgba(79,110,247,.28); transition: all .18s ease; }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(79,110,247,.4); }
+  .btn:active { transform: none; }
+  .btn:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
+  .btn.small { padding: 7px 14px; font-size: 13px; border-radius: 8px; }
+  .btn.gray { background: #94a3b8; box-shadow: none; font-weight: 500; }
+  .btn.gray:hover { background: #7d8ba1; }
+  .examples { margin-top: 12px; font-size: 13px; color: var(--muted); }
+  .examples button { margin: 5px 8px 0 0; padding: 5px 13px; font-size: 13px; color: var(--brand);
+                     background: #f0f4ff; border: 1px solid #dbe3fd; border-radius: 999px;
+                     cursor: pointer; transition: all .15s ease; }
+  .examples button:hover { background: #e3eafe; border-color: var(--brand); }
+
+  /* ---------- 结果区 ---------- */
+  .result { margin-top: 18px; }
+  .card { background: var(--card); border-radius: 16px; padding: 18px 20px; margin-bottom: 14px;
+          box-shadow: 0 2px 12px rgba(15,23,42,.06); }
+  .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .card h3 { font-size: 13px; color: var(--muted); font-weight: 600; letter-spacing: .3px;
+             text-transform: uppercase; }
+  .explain { font-size: 15px; white-space: pre-wrap; }
+  .chips span { display: inline-block; margin: 0 6px 6px 0; padding: 3px 11px; font-size: 12px;
+                background: #f3f5fb; border: 1px solid var(--line); border-radius: 999px;
+                font-family: Consolas, monospace; color: #475569; }
+  .sql-wrap { position: relative; }
+  pre.sql { background: #131a2a; color: #dbe4f3; padding: 16px 18px; border-radius: 12px;
+            font-family: Consolas, "Courier New", monospace; font-size: 13px;
+            overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  .copy-btn { position: absolute; top: 10px; right: 10px; padding: 5px 12px; font-size: 12px;
+              color: #cbd5e1; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15);
+              border-radius: 7px; cursor: pointer; transition: all .15s ease; }
+  .copy-btn:hover { background: rgba(255,255,255,.16); color: #fff; }
+  .error { background: #fdf0f0; border: 1px solid #f6caca; color: var(--danger);
+           padding: 12px 16px; border-radius: 11px; font-size: 14px; }
+  .warn { font-size: 12px; color: var(--warn); background: #fdf6ec; border: 1px solid #f3dfb8;
+          padding: 8px 13px; border-radius: 9px; margin-top: 8px; }
+  .meta { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .table-scroll { overflow-x: auto; border-radius: 10px; border: 1px solid var(--line); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { padding: 9px 14px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  th { background: linear-gradient(180deg, #f8fafd, #f1f4fa); font-weight: 600; color: #475569;
+       position: sticky; top: 0; }
+  td { color: #334155; }
+  tbody tr:hover { background: #f5f8ff; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .loading { color: var(--brand); font-size: 14px; padding: 24px 0; text-align: center; }
+  .spinner { display: inline-block; width: 18px; height: 18px; border: 3px solid #dfe5f3;
+             border-top-color: var(--brand); border-radius: 50%; vertical-align: -4px;
+             margin-right: 9px; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .answer { font-size: 15px; white-space: pre-wrap; }
+  .cite { font-size: 12px; color: var(--muted); margin-top: 12px; padding-top: 12px;
+          border-top: 1px dashed var(--line); }
+  .cite b { font-weight: 600; }
+  .cite span { display: inline-block; margin: 3px 6px 0 0; padding: 3px 10px;
+               background: #f3f5fb; border-radius: 8px; }
+  .file-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  input[type=file] { font-size: 13px; color: var(--muted); }
+  .file-row .hint { font-size: 13px; color: var(--muted); }
+  .link, .dl-btn { color: var(--brand); text-decoration: none; font-weight: 600; }
+  .dl-btn { display: inline-block; margin-top: 8px; padding: 9px 16px; color: #fff;
+            background: linear-gradient(135deg, var(--brand), var(--brand-2));
+            border-radius: 9px; box-shadow: 0 3px 10px rgba(79,110,247,.28); }
+  .empty { color: var(--muted); text-align: center; padding: 10px 0; font-size: 14px; }
+  .mini-btn { font-size: 12px; padding: 4px 12px; color: var(--brand); background: #f0f4ff;
+              border: 1px solid #dbe3fd; border-radius: 7px; cursor: pointer; transition: all .15s ease; }
+  .mini-btn:hover { background: #e3eafe; border-color: var(--brand); }
+  .history { margin-top: 12px; font-size: 12px; color: var(--muted); }
+  .history .h-label { margin-right: 4px; }
+  .h-chip { display: inline-block; margin: 4px 8px 0 0; padding: 3px 11px; font-size: 12px;
+            background: #fff; border: 1px dashed var(--line); border-radius: 999px; cursor: pointer;
+            color: #475569; transition: all .15s ease; }
+  .h-chip:hover { border-color: var(--brand); color: var(--brand); background: #f6f8ff; }
+  .h-clear { cursor: pointer; color: var(--muted); margin-left: 2px; }
+  .h-clear:hover { color: var(--danger); }
+
+  /* ---------- 登录页 ---------- */
+  .login-view { min-height: 100vh; display: flex; align-items: center; justify-content: center;
+                padding: 20px; }
+  .login-card { width: 100%; max-width: 380px; background: #fff; border-radius: 18px;
+                padding: 38px 32px; box-shadow: 0 10px 40px rgba(15,23,42,.12); text-align: center; }
+  .login-card .logo { width: 58px; height: 58px; margin: 0 auto 16px; font-size: 24px;
+                      border-radius: 15px; }
+  .login-card h2 { font-size: 20px; font-weight: 700; margin-bottom: 6px; color: var(--ink); }
+  .login-sub { font-size: 13px; color: var(--muted); margin-bottom: 26px; }
+  .login-card input { width: 100%; margin-bottom: 12px; padding: 12px 16px; font-size: 15px;
+                      border: 1px solid var(--line); border-radius: 11px; outline: none; background: #fbfcff; }
+  .login-card input:focus { border-color: var(--brand); background: #fff;
+                            box-shadow: 0 0 0 3px rgba(79,110,247,.15); }
+  .login-card .btn { width: 100%; }
+  .login-msg { min-height: 20px; font-size: 13px; color: var(--danger); margin-top: 14px; }
+  .login-hint { font-size: 12px; color: var(--muted); margin-top: 16px; line-height: 1.6; }
+
+  @media (max-width: 640px) {
+    .row { flex-direction: column; }
+    .btn { width: 100%; }
+    header { flex-direction: column; align-items: flex-start; }
+    .tabs { display: flex; width: 100%; }
+    .tabs button { flex: 1; padding: 9px 8px; }
+  }
+</style>
+</head>
+<body>
+<!-- 登录视图 -->
+<div id="loginView" class="login-view">
+  <div class="login-card">
+    <div class="logo">AI</div>
+    <h2>一体化企业智能助手</h2>
+    <p class="login-sub">登录后开始使用</p>
+    <input id="loginAccount" type="text" placeholder="账号（字母/数字/下划线）" autocomplete="username">
+    <input id="loginKey" type="password" placeholder="访问密钥（认证启用时必填）" autocomplete="current-password">
+    <button id="loginBtn" class="btn">登 录</button>
+    <div id="loginMsg" class="login-msg"></div>
+    <div id="loginHint" class="login-hint">正在检测服务状态…</div>
+  </div>
+</div>
+
+<!-- 主视图（登录后显示） -->
+<div id="mainView" class="wrap" style="display:none;">
+  <header>
+    <div class="brand">
+      <div class="logo">AI</div>
+      <h1>一体化企业智能助手
+        <span class="sub">Text-to-SQL 为主 · RAG 知识问答 · 文档转换</span>
+      </h1>
+    </div>
+    <div class="head-tools">
+      <span id="healthBadge" class="badge"><span class="dot"></span>正在检查服务…</span>
+      <span id="loginBadge" class="badge ok"><span class="dot"></span>已登录</span>
+      <button id="logoutBtn" class="btn gray small">登出</button>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button data-tab="sql" class="active">SQL 取数</button>
+    <button data-tab="rag">知识问答</button>
+    <button data-tab="doc">文档转换</button>
+  </div>
+
+  <!-- ============ 面板 1：SQL 取数（主） ============ -->
+  <div id="panel-sql" class="panel active">
+    <div class="box">
+      <div class="row">
+        <input id="sqlQ" type="text" placeholder="例如：当前在制工单有多少批？" autocomplete="off">
+        <button id="sqlBtn" class="btn">提 问</button>
+      </div>
+      <div class="examples">
+        试试：
+        <button data-q="当前在制工单有多少批？">在制批数</button>
+        <button data-q="各客户正式订单销售额排名">客户销售额排名</button>
+        <button data-q="本月准时交付率是多少？">本月OTD</button>
+        <button data-q="工单260600002的整体RTY是多少？">单工单RTY</button>
+        <button data-q="本月报废率是多少？">本月报废率</button>
+      </div>
+      <div id="sqlHistory" class="history"></div>
+    </div>
+    <div id="sqlResult" class="result"></div>
+  </div>
+
+  <!-- ============ 面板 2：知识问答（RAG） ============ -->
+  <div id="panel-rag" class="panel">
+    <div class="box">
+      <div class="row">
+        <input id="ragQ" type="text" placeholder="针对知识库提问，例如：北斗三号何时开通全球服务？">
+        <button id="ragBtn" class="btn">提 问</button>
+      </div>
+      <div class="file-row">
+        <input type="file" id="ragFile" accept=".pdf,.md,.markdown,.txt,.json,.jsonl">
+        <button id="ragIngestBtn" class="btn gray small">上传入库</button>
+        <span id="ragIngestMsg" class="hint"></span>
+      </div>
+      <div id="ragHistory" class="history"></div>
+    </div>
+    <div id="ragResult" class="result"></div>
+  </div>
+
+  <!-- ============ 面板 3：文档转换（doc_agent） ============ -->
+  <div id="panel-doc" class="panel">
+    <div class="box">
+      <div class="file-row">
+        <input type="file" id="docFile">
+      </div>
+      <textarea id="docInstruction" placeholder="转换指令，例如：把这个 PDF 转成 Markdown，保留表格"></textarea>
+      <div class="row" style="margin-top:12px;">
+        <button id="docBtn" class="btn">开始转换</button>
+      </div>
+    </div>
+    <div id="docResult" class="result"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+var $ = function (id) { return document.getElementById(id); };
+
+/* 网关 API Key（可选）：若 .env 配置了 GATEWAY_API_KEY，业务接口需携带 X-API-Key */
+function apiKey() { return localStorage.getItem("api_key") || ""; }
+
+/* 登录账号（知识库按账号隔离）：默认 default */
+function userId() { return localStorage.getItem("account") || "default"; }
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function loading(text) {
+  return '<div class="card"><div class="loading"><span class="spinner"></span>' + esc(text) + "</div></div>";
+}
+
+/* ---------- 通用复制 ---------- */
+function copyText(btn, text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () {
+      var old = btn.textContent; btn.textContent = "已复制";
+      setTimeout(function () { btn.textContent = old; }, 1500);
+    });
+  } else {
+    btn.textContent = "复制失败";
+  }
+}
+function copySql(btn) {
+  var pre = btn.closest(".card").querySelector("pre.sql");
+  copyText(btn, pre ? pre.textContent : "");
+}
+function copyAnswer(btn) {
+  var el = btn.closest(".card").querySelector(".answer");
+  copyText(btn, el ? el.textContent : "");
+}
+
+/* ---------- 查询历史（localStorage，最近 8 条） ---------- */
+function getHist(key) { try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch (e) { return []; } }
+function renderHist(key) {
+  var map = { sql_history: ["sqlHistory", "sqlQ", askSql], rag_history: ["ragHistory", "ragQ", askRag] };
+  var cfg = map[key]; if (!cfg) return;
+  var el = $(cfg[0]); if (!el) return;
+  var arr = getHist(key);
+  if (!arr.length) { el.innerHTML = ""; return; }
+  el.innerHTML = '<span class="h-label">最近：</span>' +
+    arr.map(function (q) { return '<span class="h-chip">' + esc(q) + '</span>'; }).join("") +
+    '<span class="h-clear">清空</span>';
+  Array.prototype.forEach.call(el.querySelectorAll(".h-chip"), function (chip) {
+    chip.addEventListener("click", function () { $(cfg[1]).value = chip.textContent; cfg[2](); });
+  });
+  el.querySelector(".h-clear").addEventListener("click", function () {
+    localStorage.removeItem(key); renderHist(key);
+  });
+}
+function pushHist(key, q) {
+  var arr = getHist(key).filter(function (x) { return x !== q; });
+  arr.unshift(q); arr = arr.slice(0, 8);
+  localStorage.setItem(key, JSON.stringify(arr));
+  renderHist(key);
+}
+
+/* ---------- 页签切换 ---------- */
+var tabs = document.querySelectorAll(".tabs button");
+tabs.forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    tabs.forEach(function (b) { b.classList.remove("active"); });
+    btn.classList.add("active");
+    var t = btn.getAttribute("data-tab");
+    document.querySelectorAll(".panel").forEach(function (p) { p.classList.remove("active"); });
+    $("panel-" + t).classList.add("active");
+  });
+});
+
+/* ============ 面板 1：SQL 取数 ============ */
+function isNumericColumn(name, rows, colIdx) {
+  if (!rows.length) return false;
+  var numericLike = /qty|amount|price|rate|rty|fpy|count|num|金额|数量|率|颗|批|排板|分钟|天$/i;
+  if (numericLike.test(name)) return true;
+  return rows.slice(0, 5).every(function (r) {
+    return r[colIdx] === null || r[colIdx] === "" || !isNaN(Number(r[colIdx]));
+  });
+}
+function renderSql(data) {
+  var html = "";
+  if (data.error) html += '<div class="card"><div class="error">' + esc(data.error) + "</div></div>";
+  if (data.explanation) html += '<div class="card"><h3>口径说明</h3><div class="explain">' + esc(data.explanation).replace(/\n/g, "<br>") + "</div></div>";
+  if (data.picked_tables && data.picked_tables.length) {
+    html += '<div class="card"><h3>命中数据表（Schema Linking）</h3><div class="chips">';
+    data.picked_tables.forEach(function (t) { html += "<span>" + esc(t) + "</span>"; });
+    html += "</div></div>";
+  }
+  if (data.sql) {
+    html += '<div class="card"><div class="card-head"><h3>生成的 SQL（已通过只读守卫）</h3></div>' +
+            '<div class="sql-wrap"><button class="copy-btn" onclick="copySql(this)">复制</button>' +
+            '<pre class="sql">' + esc(data.sql) + "</pre></div>";
+    (data.warnings || []).forEach(function (w) { html += '<div class="warn">⚠ ' + esc(w) + "</div>"; });
+    html += "</div>";
+  }
+  if (data.columns && data.columns.length) {
+    html += '<div class="card"><div class="card-head"><h3>查询结果</h3>' +
+            '<span class="meta" style="margin:0;">共 ' + data.row_count + " 行" +
+            (data.model ? "　模型：" + esc(data.model) : "") +
+            (data.truncated ? "　（结果过多已截断）" : "") + "</span></div>";
+    html += '<div class="table-scroll"><table><thead><tr><th class="num" style="width:42px;">#</th>';
+    data.columns.forEach(function (c, i) { html += "<th" + (isNumericColumn(c, data.rows, i) ? ' class="num"' : "") + ">" + esc(c) + "</th>"; });
+    html += "</tr></thead><tbody>";
+    data.rows.forEach(function (row, ri) {
+      html += '<tr><td class="num" style="color:#94a3b8;">' + (ri + 1) + "</td>";
+      row.forEach(function (v, i) { html += "<td" + (isNumericColumn(data.columns[i], data.rows, i) ? ' class="num"' : "") + ">" + (v === null ? '<em style="color:#94a3b8;">NULL</em>' : esc(v)) + "</td>"; });
+      html += "</tr>";
+    });
+    html += "</tbody></table></div></div>";
+  }
+  $("sqlResult").innerHTML = html || '<div class="card"><div class="empty">没有可展示的结果。</div></div>';
+}
+function askSql() {
+  var q = $("sqlQ").value.trim(); if (!q) { $("sqlQ").focus(); return; }
+  pushHist("sql_history", q);
+  var btn = $("sqlBtn"); btn.disabled = true; btn.textContent = "查询中…";
+  $("sqlResult").innerHTML = loading("正在选表、生成并校验 SQL，请稍候…");
+  fetch("/ask", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": apiKey() }, body: JSON.stringify({ question: q }) })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(renderSql)
+    .catch(function (e) { $("sqlResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(e.message) + "</div></div>"; })
+    .finally(function () { btn.disabled = false; btn.textContent = "提 问"; });
+}
+
+/* ============ 面板 2：知识问答（RAG） ============ */
+function renderRag(data) {
+  var html = "";
+  if (data.error) html += '<div class="card"><div class="error">' + esc(data.error) + "</div></div>";
+  if (data.answer) {
+    html += '<div class="card"><div class="card-head"><h3>回答</h3><button class="mini-btn" onclick="copyAnswer(this)">复制</button></div><div class="answer">' + esc(data.answer) + "</div>";
+    if (data.citations && data.citations.length) {
+      html += '<div class="cite"><b>引用</b>';
+      data.citations.forEach(function (c) {
+        var label = typeof c === "string" ? c : (c.file || c.source || JSON.stringify(c));
+        html += "<span>" + esc(label) + "</span>";
+      });
+      html += "</div>";
+    }
+    html += "</div>";
+  }
+  $("ragResult").innerHTML = html || '<div class="card"><div class="empty">没有可展示的结果。</div></div>';
+}
+function askRag() {
+  var q = $("ragQ").value.trim(); if (!q) { $("ragQ").focus(); return; }
+  pushHist("rag_history", q);
+  var btn = $("ragBtn"); btn.disabled = true; btn.textContent = "问答中…";
+  $("ragResult").innerHTML = loading("正在检索知识库并生成回答…");
+  fetch("/rag/chat", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": apiKey(), "X-User": userId() }, body: JSON.stringify({ question: q, history: [] }) })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(renderRag)
+    .catch(function (e) { $("ragResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(e.message) + "</div></div>"; })
+    .finally(function () { btn.disabled = false; btn.textContent = "提 问"; });
+}
+function ingestRag() {
+  var f = $("ragFile").files[0];
+  if (!f) { $("ragIngestMsg").textContent = "请先选择文件"; return; }
+  var btn = $("ragIngestBtn"); btn.disabled = true; $("ragIngestMsg").textContent = "入库中…";
+  var fd = new FormData(); fd.append("file", f);
+  fetch("/rag/ingest", { method: "POST", headers: { "X-API-Key": apiKey(), "X-User": userId() }, body: fd })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function (d) { $("ragIngestMsg").textContent = "已入库 " + d.chunks + " 块（" + d.filename + "）"; })
+    .catch(function (e) { $("ragIngestMsg").textContent = "入库失败：" + e.message; })
+    .finally(function () { btn.disabled = false; });
+}
+
+/* ============ 面板 3：文档转换 ============ */
+function renderDoc(data) {
+  var html = "";
+  if (data.status === "ok") {
+    html += '<div class="card"><h3>转换成功</h3>';
+    if (data.plan && data.plan.source_format) html += '<div class="meta">' + esc(data.plan.source_format) + " → " + esc(data.plan.target_format) + "</div>";
+    if (data.output_filename) html += '<a class="dl-btn" href="/doc/download/' + encodeURIComponent(data.output_filename) + '">下载结果：' + esc(data.output_filename) + "</a>";
+    html += "</div>";
+  } else if (data.error) {
+    html += '<div class="card"><div class="error">' + esc(data.error) + "</div></div>";
+  } else {
+    html += '<div class="card"><div class="empty">暂无结果。</div></div>';
+  }
+  $("docResult").innerHTML = html;
+}
+function convertDoc() {
+  var f = $("docFile").files[0];
+  var inst = $("docInstruction").value.trim();
+  if (!f) { $("docResult").innerHTML = '<div class="card"><div class="error">请选择要转换的文件</div></div>'; return; }
+  if (!inst) { $("docResult").innerHTML = '<div class="card"><div class="error">请输入转换指令</div></div>'; return; }
+  var btn = $("docBtn"); btn.disabled = true; btn.textContent = "转换中…";
+  $("docResult").innerHTML = loading("Agent 正在规划、转换并反思校验，请稍候…");
+  var fd = new FormData(); fd.append("file", f); fd.append("instruction", inst);
+  fetch("/doc/convert", { method: "POST", headers: { "X-API-Key": apiKey() }, body: fd })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(renderDoc)
+    .catch(function (e) { $("docResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(e.message) + "</div></div>"; })
+    .finally(function () { btn.disabled = false; btn.textContent = "开始转换"; });
+}
+
+/* ---------- 健康检查（主服务 SQL） ---------- */
+function checkHealth() {
+  fetch("/health").then(function (r) { return r.json(); }).then(function (h) {
+    if (h.status === "ok") { $("healthBadge").className = "badge ok"; $("healthBadge").innerHTML = '<span class="dot"></span>服务正常 · ' + h.database.tables + " 张表 · 快照 " + h.snapshot_date; }
+    else { $("healthBadge").className = "badge bad"; $("healthBadge").innerHTML = '<span class="dot"></span>配置不完整（见 /health）'; }
+  }).catch(function () { $("healthBadge").className = "badge bad"; $("healthBadge").innerHTML = '<span class="dot"></span>后端未连接'; });
+}
+
+/* ---------- 事件绑定 ---------- */
+$("sqlBtn").addEventListener("click", askSql);
+$("sqlQ").addEventListener("keydown", function (e) { if (e.key === "Enter") askSql(); });
+Array.prototype.forEach.call(document.querySelectorAll("#panel-sql .examples button"), function (b) {
+  b.addEventListener("click", function () { $("sqlQ").value = b.getAttribute("data-q"); askSql(); });
+});
+$("ragBtn").addEventListener("click", askRag);
+$("ragQ").addEventListener("keydown", function (e) { if (e.key === "Enter") askRag(); });
+$("ragIngestBtn").addEventListener("click", ingestRag);
+$("docBtn").addEventListener("click", convertDoc);
+$("docInstruction").addEventListener("keydown", function (e) {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); convertDoc(); }
+});
+
+/* ---------- 登录 / 登出 ---------- */
+function isLoggedIn() { return !!localStorage.getItem("account"); }
+function showLogin() { $("loginView").style.display = ""; $("mainView").style.display = "none"; }
+function showMain() {
+  $("loginView").style.display = "none"; $("mainView").style.display = "";
+  $("loginBadge").innerHTML = '<span class="dot"></span>已登录：' + esc(userId());
+  renderHist("sql_history"); renderHist("rag_history");
+  checkHealth();
+}
+function doLogin() {
+  var account = $("loginAccount").value.trim();
+  var key = $("loginKey").value.trim();
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(account)) {
+    $("loginMsg").textContent = "账号仅限字母、数字、下划线、连字符";
+    return;
+  }
+  $("loginMsg").textContent = "登录中…";
+  fetch("/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account: account, api_key: key }) })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d.ok) {
+        localStorage.setItem("account", d.account);
+        localStorage.setItem("api_key", key);
+        $("loginMsg").textContent = "";
+        showMain();
+      } else {
+        $("loginMsg").textContent = d.error || "登录失败";
+      }
+    })
+    .catch(function (e) { $("loginMsg").textContent = "登录请求失败：" + e.message; });
+}
+function doLogout() {
+  localStorage.removeItem("account");
+  localStorage.removeItem("api_key");
+  $("loginAccount").value = ""; $("loginKey").value = ""; $("loginMsg").textContent = "";
+  showLogin();
+}
+function detectAuth() {
+  fetch("/api/health").then(function (r) { return r.json(); }).then(function (h) {
+    if (h.auth_enabled) {
+      $("loginKey").style.display = "";
+      $("loginHint").textContent = "服务已启用密钥认证，请输入正确的访问密钥。";
+    } else {
+      $("loginKey").style.display = "none";
+      $("loginHint").textContent = "当前未启用密钥认证，输入账号即可登录演示。";
+    }
+  }).catch(function () { $("loginHint").textContent = "无法连接服务，请确认后端已启动。"; });
+}
+
+/* 登录/登出事件 */
+$("loginBtn").addEventListener("click", doLogin);
+$("loginAccount").addEventListener("keydown", function (e) { if (e.key === "Enter") doLogin(); });
+$("loginKey").addEventListener("keydown", function (e) { if (e.key === "Enter") doLogin(); });
+$("logoutBtn").addEventListener("click", doLogout);
+
+/* 初始化：检测认证状态 + 判断是否已登录 */
+detectAuth();
+if (isLoggedIn()) { showMain(); } else { showLogin(); }
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# enterprise-copilot 一体化部署（F2）
+#
+# 单服务单端口 8000（gateway 已内聚 SQL/RAG/文档三大技能，无需多容器）。
+# 使用：docker compose up --build -d
+# 注意：需要 .env（不入库）提供 LLM_API_KEY / EMBED_API_KEY 等配置。
+
+services:
+  copilot:
+    build: .
+    container_name: enterprise-copilot
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # 容器内 data 挂载到 /app/data，业务代码用相对 data/ 的路径即可
+      DB_PATH: /app/data/db/ic_substrate.db
+      CHROMA_DIR: /app/data/chroma
+    volumes:
+      - ./data:/app/data   # 预置了 chroma 向量库 + ic_substrate.db，并承载 uploads/output/memory
+    restart: unless-stopped
