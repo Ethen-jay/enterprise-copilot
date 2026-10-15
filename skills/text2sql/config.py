@@ -41,10 +41,14 @@ if not DB_PATH.is_absolute():
 # ----------------------------------------------------------------------
 # 业务参数
 # ----------------------------------------------------------------------
-# 业务基准日（数据窗口末日）：“本月/近一周/今天”都相对它算，禁用 date('now')
+# 兜底基准日：仅当运行时 MAX(业务日期) 探测全部失败时回退使用（见 anchor.py）。
+# 正常情况锚点由 anchor.get_anchor_date() 每次运行时查库取得，不再写死。
 ANCHOR_DATE = os.getenv("ANCHOR_DATE", "2026-09-24")
-# 应收账龄快照日（财务观察时点，可切到 2026-10-31 演示逾期）
-SNAPSHOT_DATE = os.getenv("SNAPSHOT_DATE", ANCHOR_DATE)
+# 动态锚点缓存秒数：数据按天滚动，默认 5 分钟足够跟进；设 0 表示每次现查。
+ANCHOR_TTL_SECONDS = float(os.getenv("ANCHOR_TTL_SECONDS", "300"))
+# 应收账龄快照日：留空/不配 = 跟随动态锚点（生产语义）；
+# 显式设置则固定（如 '2026-10-31' 演示逾期）。
+SNAPSHOT_DATE = os.getenv("SNAPSHOT_DATE", "").strip()
 
 # 服务端口（简历项目约定 8010）
 SERVER_HOST = os.getenv("SERVER_HOST", "127.0.0.1")

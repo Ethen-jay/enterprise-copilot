@@ -1,6 +1,9 @@
 {
-  "run_time": "20260928_102129",
+  "run_time": "20261014_160502",
   "model": "deepseek-chat",
+  "anchor_date": "2026-09-24",
+  "anchor_dynamic": true,
+  "anchor_source": "MAX(业务日期) -> 2026-09-24（fact_shipment.ship_date=2026-09-24、fact_process_record.out_time=2026-09-24、fact_sales_order.order_date=2026-09-19、fact_etest.test_time=2026-09-12、fact_customer_complaint.complaint_date=2026-09-12）",
   "snapshot_date": "2026-09-24",
   "total": 50,
   "passed": 50,
@@ -35,7 +38,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.5,
+      "elapsed_sec": 1.9,
       "model": "deepseek-chat"
     },
     {
@@ -67,7 +70,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.0,
+      "elapsed_sec": 1.7,
       "model": "deepseek-chat"
     },
     {
@@ -112,7 +115,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.6,
+      "elapsed_sec": 2.2,
       "model": "deepseek-chat"
     },
     {
@@ -128,7 +131,7 @@
         "dim_customer",
         "fact_sales_order_item"
       ],
-      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       COUNT(DISTINCT o.order_id) AS order_cnt,\n       ROUND(SUM(i.order_qty * i.unit_price), 2) AS amount\nFROM fact_sales_order o\nJOIN fact_sales_order_item i ON i.order_id = o.order_id\nJOIN dim_customer c ON c.customer_id = o.customer_id\nWHERE o.order_type = '正式单'\n  AND o.order_date >= '2026-01-01'\n  AND c.customer_name = '韦尔股份豪威'\nGROUP BY c.customer_id, c.customer_name",
+      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       COUNT(DISTINCT o.order_id) AS order_cnt,\n       ROUND(SUM(i.order_qty * i.unit_price), 2) AS amount\nFROM fact_sales_order o\nJOIN fact_sales_order_item i ON i.order_id = o.order_id\nJOIN dim_customer c ON c.customer_id = o.customer_id\nWHERE o.order_type = '正式单'\n  AND o.order_date >= date('2026-09-24', 'start of year')\n  AND c.customer_name = '韦尔股份豪威'\nGROUP BY c.customer_id, c.customer_name",
       "columns": [
         "customer_id",
         "customer_name",
@@ -158,7 +161,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.8,
+      "elapsed_sec": 1.6,
       "model": "deepseek-chat"
     },
     {
@@ -249,7 +252,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.6,
+      "elapsed_sec": 1.5,
       "model": "deepseek-chat"
     },
     {
@@ -264,7 +267,7 @@
         "fact_process_record",
         "dim_process"
       ],
-      "sql": "WITH fpy AS (\n  SELECT process_id,\n         good_panels * 1.0 / input_panels AS f\n  FROM fact_process_record\n  WHERE lot_id = '260600002'\n    AND is_rework_pass = 0\n)\nSELECT '260600002' AS lot_id,\n       (SELECT lot_status FROM fact_work_order WHERE lot_id = '260600002') AS lot_status,\n       ROUND(\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END), 4) AS rty\nFROM fpy\nHAVING COUNT(DISTINCT process_id) = 17",
+      "sql": "WITH fpy AS (\n  SELECT process_id,\n         good_panels * 1.0 / input_panels AS f\n  FROM fact_process_record\n  WHERE lot_id = '260600002'\n    AND is_rework_pass = 0\n)\nSELECT '260600002' AS lot_id,\n       (SELECT lot_status FROM fact_work_order WHERE lot_id = '260600002') AS lot_status,\n       ROUND(MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n     * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n     * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n     * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n     * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n     * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n     * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n     * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n     * MAX(CASE WHEN process_id='P17' THEN f END), 4) AS rty\nFROM fpy\nHAVING COUNT(DISTINCT process_id) = 17",
       "columns": [
         "lot_id",
         "lot_status",
@@ -287,7 +290,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 2.1,
+      "elapsed_sec": 2.5,
       "model": "deepseek-chat"
     },
     {
@@ -303,7 +306,7 @@
         "fact_process_record",
         "dim_process"
       ],
-      "sql": "WITH fpy AS (\n  SELECT p.lot_id,\n         p.process_id,\n         p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n),\nordered AS (\n  SELECT rty,\n         ROW_NUMBER() OVER (ORDER BY rty) AS rn,\n         COUNT(*) OVER () AS n\n  FROM lot_rty\n),\nmid AS (\n  SELECT rty FROM ordered WHERE rn IN ((n + 1) / 2, (n + 2) / 2)\n)\nSELECT (SELECT COUNT(*) FROM lot_rty) AS lot_cnt,\n       ROUND((SELECT AVG(rty) FROM lot_rty), 4) AS avg_rty,\n       ROUND(AVG(mid.rty), 4) AS median_rty\nFROM mid",
+      "sql": "WITH fpy AS (\n  SELECT p.lot_id, p.process_id, p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n),\nordered AS (\n  SELECT rty,\n         ROW_NUMBER() OVER (ORDER BY rty) AS rn,\n         COUNT(*) OVER () AS n\n  FROM lot_rty\n),\nmid AS (\n  SELECT rty FROM ordered WHERE rn IN ((n + 1) / 2, (n + 2) / 2)\n)\nSELECT (SELECT COUNT(*) FROM lot_rty) AS lot_cnt,\n       ROUND((SELECT AVG(rty) FROM lot_rty), 4) AS avg_rty,\n       ROUND(AVG(mid.rty), 4) AS median_rty\nFROM mid",
       "columns": [
         "lot_cnt",
         "avg_rty",
@@ -331,7 +334,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 13.9,
+      "elapsed_sec": 3.1,
       "model": "deepseek-chat"
     },
     {
@@ -393,7 +396,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 2.4,
+      "elapsed_sec": 2.5,
       "model": "deepseek-chat"
     },
     {
@@ -441,7 +444,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.7,
+      "elapsed_sec": 2.0,
       "model": "deepseek-chat"
     },
     {
@@ -479,7 +482,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.5,
+      "elapsed_sec": 1.7,
       "model": "deepseek-chat"
     },
     {
@@ -529,7 +532,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.9,
+      "elapsed_sec": 2.0,
       "model": "deepseek-chat"
     },
     {
@@ -580,7 +583,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.6,
+      "elapsed_sec": 1.9,
       "model": "deepseek-chat"
     },
     {
@@ -595,11 +598,11 @@
         "fact_receivable",
         "dim_customer"
       ],
-      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       COUNT(*) AS 未结清笔数\nFROM fact_receivable r\nJOIN dim_customer c ON c.customer_id = r.customer_id\nWHERE r.status IN ('部分','未收')\nGROUP BY c.customer_id, c.customer_name\nORDER BY 未结清笔数 DESC\nLIMIT 1",
+      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       COUNT(*) AS unpaid_bills\nFROM fact_receivable r\nJOIN dim_customer c ON c.customer_id = r.customer_id\nWHERE r.status IN ('部分','未收')\nGROUP BY c.customer_id, c.customer_name\nORDER BY unpaid_bills DESC\nLIMIT 1",
       "columns": [
         "customer_id",
         "customer_name",
-        "未结清笔数"
+        "unpaid_bills"
       ],
       "rows": [
         [
@@ -623,7 +626,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.3,
+      "elapsed_sec": 1.7,
       "model": "deepseek-chat"
     },
     {
@@ -640,7 +643,7 @@
         "fact_sales_order",
         "fact_sales_order_item"
       ],
-      "sql": "SELECT\n  (SELECT COALESCE(SUM(si.ship_qty_units), 0)\n   FROM fact_shipment s\n   JOIN fact_shipment_item si ON si.shipment_id = s.shipment_id\n   WHERE s.ship_date BETWEEN date('2026-09-24', '-6 day') AND '2026-09-24'\n  ) AS actual_units,\n  (SELECT COALESCE(SUM(i.order_qty), 0)\n   FROM fact_sales_order_item i\n   WHERE i.due_date BETWEEN date('2026-09-24', '-6 day') AND '2026-09-24'\n  ) AS planned_units",
+      "sql": "SELECT\n  (SELECT COALESCE(SUM(si.ship_qty_units), 0)\n   FROM fact_shipment s\n   JOIN fact_shipment_item si ON si.shipment_id = s.shipment_id\n   WHERE s.ship_date >= date('2026-09-24', '-6 day')\n     AND s.ship_date <= '2026-09-24'\n  ) AS actual_units,\n  (SELECT COALESCE(SUM(i.order_qty), 0)\n   FROM fact_sales_order_item i\n   WHERE i.due_date >= date('2026-09-24', '-6 day')\n     AND i.due_date <= '2026-09-24'\n  ) AS planned_units",
       "columns": [
         "actual_units",
         "planned_units"
@@ -666,7 +669,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.6,
+      "elapsed_sec": 1.7,
       "model": "deepseek-chat"
     },
     {
@@ -712,7 +715,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.4,
+      "elapsed_sec": 1.8,
       "model": "deepseek-chat"
     },
     {
@@ -763,7 +766,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 2.2,
       "model": "deepseek-chat"
     },
     {
@@ -824,7 +827,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 1.5,
       "model": "deepseek-chat"
     },
     {
@@ -839,19 +842,17 @@
         "dim_equipment",
         "fact_equipment_downtime"
       ],
-      "sql": "SELECT e.equipment_id,\n       e.equipment_name,\n       SUM(dt.duration_min) AS total_down_min,\n       COUNT(*) AS down_times\nFROM fact_equipment_downtime dt\nJOIN dim_equipment e ON e.equipment_id = dt.equipment_id\nGROUP BY e.equipment_id, e.equipment_name\nORDER BY total_down_min DESC\nLIMIT 1",
+      "sql": "SELECT e.equipment_id,\n       e.equipment_name,\n       SUM(dt.duration_min) AS total_down_min\nFROM fact_equipment_downtime dt\nJOIN dim_equipment e ON e.equipment_id = dt.equipment_id\nGROUP BY e.equipment_id, e.equipment_name\nORDER BY total_down_min DESC\nLIMIT 1",
       "columns": [
         "equipment_id",
         "equipment_name",
-        "total_down_min",
-        "down_times"
+        "total_down_min"
       ],
       "rows": [
         [
           "Q0202",
           "内层AOI机台",
-          1200,
-          3
+          1200
         ]
       ],
       "checks": [
@@ -869,7 +870,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 1.5,
       "model": "deepseek-chat"
     },
     {
@@ -922,7 +923,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.3,
+      "elapsed_sec": 1.4,
       "model": "deepseek-chat"
     },
     {
@@ -937,17 +938,15 @@
         "fact_receivable",
         "dim_customer"
       ],
-      "sql": "SELECT\n  ROUND(SUM(CASE WHEN x.due_date >= '2026-09-24' THEN x.bal ELSE 0 END), 2) AS 未到期余额,\n  ROUND(SUM(CASE WHEN x.due_date <  '2026-09-24' THEN x.bal ELSE 0 END), 2) AS 逾期金额,\n  COUNT(*) AS 未结清笔数\nFROM (\n  SELECT r.due_date,\n         r.amount - r.received_amount AS bal\n  FROM fact_receivable r\n  WHERE r.status IN ('部分','未收')\n) x",
+      "sql": "SELECT\n  ROUND(SUM(CASE WHEN r.due_date >= '2026-09-24' THEN r.amount - r.received_amount ELSE 0 END), 2) AS 未到期余额,\n  ROUND(SUM(CASE WHEN r.due_date <  '2026-09-24' THEN r.amount - r.received_amount ELSE 0 END), 2) AS 逾期金额\nFROM fact_receivable r\nWHERE r.status IN ('部分', '未收')",
       "columns": [
         "未到期余额",
-        "逾期金额",
-        "未结清笔数"
+        "逾期金额"
       ],
       "rows": [
         [
           738598.07,
-          0.0,
-          99
+          0.0
         ]
       ],
       "checks": [
@@ -965,7 +964,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 1.8,
       "model": "deepseek-chat"
     },
     {
@@ -1010,7 +1009,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.3,
+      "elapsed_sec": 1.6,
       "model": "deepseek-chat"
     },
     {
@@ -1023,7 +1022,7 @@
       "picked_tables": [
         "fact_work_order"
       ],
-      "sql": "SELECT COUNT(*) AS lot_cnt\nFROM fact_work_order\nWHERE release_date >= '2026-06-01'\n  AND release_date < '2026-07-01'",
+      "sql": "SELECT COUNT(*) AS lot_cnt\nFROM fact_work_order\nWHERE date(release_date) >= '2026-06-01'\n  AND date(release_date) < '2026-07-01'",
       "columns": [
         "lot_cnt"
       ],
@@ -1042,7 +1041,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 0.9,
+      "elapsed_sec": 1.8,
       "model": "deepseek-chat"
     },
     {
@@ -1076,7 +1075,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 1.8,
       "model": "deepseek-chat"
     },
     {
@@ -1093,16 +1092,16 @@
         "dim_customer",
         "fact_sales_order_item"
       ],
-      "sql": "SELECT COUNT(*) AS 全部订单数,\n       SUM(CASE WHEN order_type = '正式单' THEN 1 ELSE 0 END) AS 正式订单数,\n       ROUND(SUM(CASE WHEN order_type = '正式单' THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4) AS 正式单占比\nFROM fact_sales_order",
+      "sql": "SELECT COUNT(DISTINCT CASE WHEN order_type = '正式单' THEN order_id END) AS formal_orders,\n       COUNT(DISTINCT order_id) AS all_orders,\n       ROUND(COUNT(DISTINCT CASE WHEN order_type = '正式单' THEN order_id END) * 1.0\n             / COUNT(DISTINCT order_id), 4) AS formal_ratio\nFROM fact_sales_order",
       "columns": [
-        "全部订单数",
-        "正式订单数",
-        "正式单占比"
+        "formal_orders",
+        "all_orders",
+        "formal_ratio"
       ],
       "rows": [
         [
-          420,
           289,
+          420,
           0.6881
         ]
       ],
@@ -1126,7 +1125,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 2.2,
+      "elapsed_sec": 1.8,
       "model": "deepseek-chat"
     },
     {
@@ -1169,7 +1168,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.4,
+      "elapsed_sec": 1.5,
       "model": "deepseek-chat"
     },
     {
@@ -1182,14 +1181,12 @@
       "picked_tables": [
         "fact_work_order"
       ],
-      "sql": "SELECT priority AS 优先级,\n       COUNT(*) AS 批次数\nFROM fact_work_order\nWHERE priority = '紧急'\nGROUP BY priority",
+      "sql": "SELECT COUNT(*) AS urgent_lot_cnt\nFROM fact_work_order\nWHERE priority = '紧急'",
       "columns": [
-        "优先级",
-        "批次数"
+        "urgent_lot_cnt"
       ],
       "rows": [
         [
-          "紧急",
           645
         ]
       ],
@@ -1203,7 +1200,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 1.6,
       "model": "deepseek-chat"
     },
     {
@@ -1219,7 +1216,7 @@
         "dim_customer",
         "dim_product"
       ],
-      "sql": "SELECT ROUND(SUM(i.order_qty * i.unit_price), 2) AS amount\nFROM fact_sales_order o\nJOIN fact_sales_order_item i ON i.order_id = o.order_id\nWHERE o.order_type = '正式单'\n  AND o.order_date >= '2026-08-01'\n  AND o.order_date <= '2026-08-31'",
+      "sql": "SELECT ROUND(SUM(i.order_qty * i.unit_price), 2) AS amount\nFROM fact_sales_order o\nJOIN fact_sales_order_item i ON i.order_id = o.order_id\nWHERE o.order_type = '正式单'\n  AND date(o.order_date) >= date('2026-09-24','start of month','-1 month')\n  AND date(o.order_date) <  date('2026-09-24','start of month')",
       "columns": [
         "amount"
       ],
@@ -1238,7 +1235,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 1.7,
       "model": "deepseek-chat"
     },
     {
@@ -1288,7 +1285,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.4,
+      "elapsed_sec": 1.8,
       "model": "deepseek-chat"
     },
     {
@@ -1336,7 +1333,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.6,
+      "elapsed_sec": 1.8,
       "model": "deepseek-chat"
     },
     {
@@ -1351,9 +1348,9 @@
         "dim_customer",
         "dim_product"
       ],
-      "sql": "SELECT COUNT(*) AS 处理中客诉数\nFROM fact_customer_complaint\nWHERE status = '处理中'",
+      "sql": "SELECT COUNT(*) AS 处理中客诉起数\nFROM fact_customer_complaint\nWHERE status = '处理中'",
       "columns": [
-        "处理中客诉数"
+        "处理中客诉起数"
       ],
       "rows": [
         [
@@ -1370,7 +1367,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 0.8,
+      "elapsed_sec": 1.5,
       "model": "deepseek-chat"
     },
     {
@@ -1387,17 +1384,19 @@
         "dim_process",
         "fact_work_order"
       ],
-      "sql": "WITH fpy AS (\n  SELECT p.lot_id,\n         p.process_id,\n         p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n)\nSELECT pr.product_type,\n       COUNT(*) AS lot_cnt,\n       ROUND(AVG(r.rty), 4) AS avg_rty\nFROM lot_rty r\nJOIN fact_work_order w ON w.lot_id = r.lot_id\nJOIN dim_product pr ON pr.product_id = w.product_id\nWHERE pr.product_type = 'RF'\nGROUP BY pr.product_type",
+      "sql": "WITH fpy AS (\n  SELECT p.lot_id,\n         p.process_id,\n         p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n),\nrf_rty AS (\n  SELECT r.rty\n  FROM lot_rty r\n  JOIN fact_work_order w ON w.lot_id = r.lot_id\n  JOIN dim_product pr ON pr.product_id = w.product_id\n  WHERE pr.product_type = 'RF'\n),\nordered AS (\n  SELECT rty,\n         ROW_NUMBER() OVER (ORDER BY rty) AS rn,\n         COUNT(*) OVER () AS n\n  FROM rf_rty\n),\nmid AS (\n  SELECT rty FROM ordered WHERE rn IN ((n + 1) / 2, (n + 2) / 2)\n)\nSELECT 'RF' AS product_type,\n       (SELECT COUNT(*) FROM rf_rty) AS lot_cnt,\n       ROUND((SELECT AVG(rty) FROM rf_rty), 4) AS avg_rty,\n       ROUND(AVG(mid.rty), 4) AS median_rty\nFROM mid",
       "columns": [
         "product_type",
         "lot_cnt",
-        "avg_rty"
+        "avg_rty",
+        "median_rty"
       ],
       "rows": [
         [
           "RF",
           110,
-          0.8397
+          0.8397,
+          0.8402
         ]
       ],
       "checks": [
@@ -1415,7 +1414,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 2.5,
+      "elapsed_sec": 3.7,
       "model": "deepseek-chat"
     },
     {
@@ -1432,17 +1431,32 @@
         "dim_process",
         "fact_work_order"
       ],
-      "sql": "WITH fpy AS (\n  SELECT p.lot_id,\n         p.process_id,\n         p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n)\nSELECT pr.product_type,\n       COUNT(*) AS lot_cnt,\n       ROUND(AVG(r.rty), 4) AS avg_rty\nFROM lot_rty r\nJOIN fact_work_order w ON w.lot_id = r.lot_id\nJOIN dim_product pr ON pr.product_id = w.product_id\nGROUP BY pr.product_type\nORDER BY avg_rty DESC\nLIMIT 1",
+      "sql": "WITH fpy AS (\n  SELECT p.lot_id,\n         p.process_id,\n         p.good_panels * 1.0 / p.input_panels AS f\n  FROM fact_process_record p\n  JOIN fact_work_order w ON w.lot_id = p.lot_id\n  WHERE w.lot_status = '已完工'\n    AND p.is_rework_pass = 0\n),\nlot_rty AS (\n  SELECT lot_id,\n         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)\n       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)\n       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)\n       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)\n       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)\n       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)\n       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)\n       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)\n       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty\n  FROM fpy\n  GROUP BY lot_id\n  HAVING COUNT(DISTINCT process_id) = 17\n)\nSELECT pr.product_type AS 产品类型,\n       COUNT(*) AS 批次数,\n       ROUND(AVG(r.rty), 4) AS 平均RTY\nFROM lot_rty r\nJOIN fact_work_order w ON w.lot_id = r.lot_id\nJOIN dim_product pr ON pr.product_id = w.product_id\nGROUP BY pr.product_type\nORDER BY 平均RTY DESC",
       "columns": [
-        "product_type",
-        "lot_cnt",
-        "avg_rty"
+        "产品类型",
+        "批次数",
+        "平均RTY"
       ],
       "rows": [
         [
           "WBCSP",
           224,
           0.8401
+        ],
+        [
+          "RF",
+          110,
+          0.8397
+        ],
+        [
+          "FCCSP",
+          422,
+          0.8305
+        ],
+        [
+          "FCBGA",
+          826,
+          0.8025
         ]
       ],
       "checks": [
@@ -1460,7 +1474,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 13.6,
+      "elapsed_sec": 2.7,
       "model": "deepseek-chat"
     },
     {
@@ -1513,7 +1527,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.7,
+      "elapsed_sec": 2.0,
       "model": "deepseek-chat"
     },
     {
@@ -1528,14 +1542,12 @@
         "dim_defect_code",
         "dim_process"
       ],
-      "sql": "SELECT dc.defect_category,\n       SUM(d.defect_qty) AS defect_qty\nFROM fact_defect d\nJOIN dim_defect_code dc ON dc.defect_code = d.defect_code\nWHERE dc.defect_category = '孔'\nGROUP BY dc.defect_category",
+      "sql": "SELECT SUM(d.defect_qty) AS 孔类缺陷总数\nFROM fact_defect d\nJOIN dim_defect_code dc ON dc.defect_code = d.defect_code\nWHERE dc.defect_category = '孔'",
       "columns": [
-        "defect_category",
-        "defect_qty"
+        "孔类缺陷总数"
       ],
       "rows": [
         [
-          "孔",
           1417
         ]
       ],
@@ -1549,7 +1561,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 0.9,
+      "elapsed_sec": 1.3,
       "model": "deepseek-chat"
     },
     {
@@ -1564,7 +1576,7 @@
         "dim_process",
         "fact_work_order"
       ],
-      "sql": "SELECT SUM(scrap_panels) AS scrap_panels,\n       SUM(input_panels) AS input_panels,\n       ROUND(SUM(scrap_panels) * 1.0 / SUM(input_panels), 4) AS scrap_rate\nFROM fact_process_record\nWHERE is_rework_pass = 0\n  AND date(out_time) >= '2026-08-01'\n  AND date(out_time) < '2026-09-01'",
+      "sql": "SELECT SUM(scrap_panels) AS scrap_panels,\n       SUM(input_panels) AS input_panels,\n       ROUND(SUM(scrap_panels) * 1.0 / SUM(input_panels), 4) AS scrap_rate\nFROM fact_process_record\nWHERE is_rework_pass = 0\n  AND date(out_time) >= date('2026-09-24', 'start of month', '-1 month')\n  AND date(out_time) <  date('2026-09-24', 'start of month')",
       "columns": [
         "scrap_panels",
         "input_panels",
@@ -1587,7 +1599,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.5,
+      "elapsed_sec": 1.4,
       "model": "deepseek-chat"
     },
     {
@@ -1621,7 +1633,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.8,
+      "elapsed_sec": 1.7,
       "model": "deepseek-chat"
     },
     {
@@ -1672,7 +1684,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.4,
+      "elapsed_sec": 1.5,
       "model": "deepseek-chat"
     },
     {
@@ -1707,7 +1719,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 1.8,
       "model": "deepseek-chat"
     },
     {
@@ -1781,7 +1793,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.3,
+      "elapsed_sec": 1.6,
       "model": "deepseek-chat"
     },
     {
@@ -1795,19 +1807,15 @@
         "fact_receivable",
         "dim_customer"
       ],
-      "sql": "SELECT COUNT(*) AS 账单笔数,\n       ROUND(SUM(amount), 2) AS 应收金额合计,\n       ROUND(SUM(received_amount), 2) AS 已收金额合计,\n       ROUND(SUM(amount - received_amount), 2) AS 未收余额合计\nFROM fact_receivable",
+      "sql": "SELECT ROUND(SUM(amount), 2) AS 应收金额合计,\n       COUNT(*) AS 台账笔数\nFROM fact_receivable",
       "columns": [
-        "账单笔数",
         "应收金额合计",
-        "已收金额合计",
-        "未收余额合计"
+        "台账笔数"
       ],
       "rows": [
         [
-          301,
           2193000.27,
-          1454402.2,
-          738598.07
+          301
         ]
       ],
       "checks": [
@@ -1820,7 +1828,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.6,
+      "elapsed_sec": 1.0,
       "model": "deepseek-chat"
     },
     {
@@ -1834,15 +1842,13 @@
         "fact_receivable",
         "dim_customer"
       ],
-      "sql": "SELECT COUNT(*) AS settled_bills,\n       ROUND(SUM(amount), 2) AS settled_amount\nFROM fact_receivable\nWHERE status = '已结清'",
+      "sql": "SELECT COUNT(*) AS settled_bills\nFROM fact_receivable\nWHERE status = '已结清'",
       "columns": [
-        "settled_bills",
-        "settled_amount"
+        "settled_bills"
       ],
       "rows": [
         [
-          202,
-          1454402.2
+          202
         ]
       ],
       "checks": [
@@ -1855,7 +1861,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.3,
+      "elapsed_sec": 1.2,
       "model": "deepseek-chat"
     },
     {
@@ -1896,7 +1902,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.4,
+      "elapsed_sec": 1.2,
       "model": "deepseek-chat"
     },
     {
@@ -1912,10 +1918,10 @@
         "dim_process",
         "fact_work_order"
       ],
-      "sql": "SELECT s.shift_name AS 班次,\n       COUNT(*) AS 过站记录数\nFROM fact_process_record p\nJOIN dim_shift s ON s.shift_id = p.shift_id\nWHERE s.shift_name = '夜班'\nGROUP BY s.shift_name",
+      "sql": "SELECT s.shift_name,\n       COUNT(*) AS record_cnt\nFROM fact_process_record p\nJOIN dim_shift s ON s.shift_id = p.shift_id\nWHERE s.shift_name = '夜班'\nGROUP BY s.shift_name",
       "columns": [
-        "班次",
-        "过站记录数"
+        "shift_name",
+        "record_cnt"
       ],
       "rows": [
         [
@@ -1933,7 +1939,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 2.0,
+      "elapsed_sec": 1.9,
       "model": "deepseek-chat"
     },
     {
@@ -1946,9 +1952,9 @@
       "picked_tables": [
         "dim_equipment"
       ],
-      "sql": "SELECT COUNT(*) AS 维修中设备台数\nFROM dim_equipment\nWHERE status = '维修'",
+      "sql": "SELECT COUNT(*) AS maintenance_equipment_count\nFROM dim_equipment\nWHERE status = '维修'",
       "columns": [
-        "维修中设备台数"
+        "maintenance_equipment_count"
       ],
       "rows": [
         [
@@ -1965,7 +1971,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 1.4,
       "model": "deepseek-chat"
     },
     {
@@ -1999,7 +2005,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.1,
+      "elapsed_sec": 1.3,
       "model": "deepseek-chat"
     },
     {
@@ -2016,21 +2022,21 @@
         "dim_material",
         "dim_product"
       ],
-      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       x.complaint_id,\n       x.complaint_date,\n       x.dppm\nFROM fact_customer_complaint x\nJOIN dim_customer c ON c.customer_id = x.customer_id\nORDER BY x.dppm DESC\nLIMIT 1",
+      "sql": "SELECT c.customer_id,\n       c.customer_name,\n       x.dppm,\n       x.complaint_date,\n       x.defect_summary\nFROM fact_customer_complaint x\nJOIN dim_customer c ON c.customer_id = x.customer_id\nORDER BY x.dppm DESC\nLIMIT 1",
       "columns": [
         "customer_id",
         "customer_name",
-        "complaint_id",
+        "dppm",
         "complaint_date",
-        "dppm"
+        "defect_summary"
       ],
       "rows": [
         [
           "C001",
           "海思半导体",
-          "CC0018",
+          178,
           "2026-08-05",
-          178
+          "尺寸超差"
         ]
       ],
       "checks": [
@@ -2062,14 +2068,12 @@
         "fact_inventory",
         "dim_material"
       ],
-      "sql": "SELECT '成品' AS stock_type,\n       SUM(qty_on_hand) AS qty_on_hand\nFROM fact_inventory\nWHERE stock_type = '成品'",
+      "sql": "SELECT SUM(qty_on_hand) AS 成品库存颗数\nFROM fact_inventory\nWHERE stock_type = '成品'",
       "columns": [
-        "stock_type",
-        "qty_on_hand"
+        "成品库存颗数"
       ],
       "rows": [
         [
-          "成品",
           2823720
         ]
       ],
@@ -2083,7 +2087,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 3.0,
+      "elapsed_sec": 1.3,
       "model": "deepseek-chat"
     },
     {
@@ -2116,7 +2120,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.1,
+      "elapsed_sec": 1.7,
       "model": "deepseek-chat"
     },
     {
@@ -2150,7 +2154,7 @@
       "passed": true,
       "stage": "executed",
       "error": null,
-      "elapsed_sec": 1.2,
+      "elapsed_sec": 1.4,
       "model": "deepseek-chat"
     }
   ]

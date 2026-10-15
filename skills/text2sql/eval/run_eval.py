@@ -27,6 +27,7 @@ from skills.text2sql.llm_client import generate_sql, LLMError    # noqa: E402
 from skills.text2sql.sql_guard import check_sql                  # noqa: E402
 from skills.text2sql.executor import execute_select, ReadonlyExecError  # noqa: E402
 from skills.text2sql import config                               # noqa: E402
+from skills.text2sql.anchor import get_anchor_date, get_snapshot_date  # noqa: E402
 
 EVAL_DIR = Path(__file__).resolve().parents[0]   # skills/text2sql/eval
 QUESTIONS_MD = EVAL_DIR / "questions.md"
@@ -52,7 +53,8 @@ def parse_questions() -> list:
         if len(cells) < 4:
             continue
         eid, module, question, expected = cells[0], cells[1], cells[2], cells[3]
-        # 必须命中的要点用中文分号分隔；一个要点内的等价写法用“或”分隔
+        # 必须命中的要点用中文分号分隔；一个要点内的等价写法用“或”分隔。
+        # 以 ~ 开头的要点为“软断言”（过滤输入维度）：结果未回显该维度列时不强制命中。
         points = [p.strip() for p in re.split(r"[；;]", expected) if p.strip()]
         cases.append({
             "id": eid, "module": module, "question": question,
@@ -100,13 +102,33 @@ def check_expected(points: list, columns: list, rows: list) -> list:
         flat_values.extend(r)
     flat_text = " ".join(str(v) for v in flat_values)
     numbers = _all_numbers(flat_values)
-    return [_hit_point(p, flat_text, numbers) for p in points]
+    # 结果数据行里是否回显了文本型维度值（如产品名 RF、工序号 P01）。
+    # 只看数据单元格、不看列名（列名恒为字符串）。用于“软断言”：
+    # 以 ~ 开头的要点是“过滤输入维度”（如“RF类产品的RTY”里的 RF），
+    # 模型把它只写在 WHERE、结果为纯数值时不强制回显；一旦回显了维度列，
+    # 就必须命中正确取值（防止返回了错误的产品类别却碰巧数值接近）。
+    has_text_cell = any(
+        isinstance(v, str) and v.strip()
+        for r in rows for v in r
+    )
+    results = []
+    for p in points:
+        soft = p.startswith("~")
+        cand = p[1:].strip() if soft else p
+        if soft and not has_text_cell:
+            # 仅过滤、未回显维度：数值要点能对上即视为过滤正确
+            results.append({"point": p, "hit": True, "matched": None, "soft_skipped": True})
+        else:
+            hit = _hit_point(cand, flat_text, numbers)
+            hit["point"] = p  # 保留题库原始写法（含 ~）
+            results.append(hit)
+    return results
 
 
 # ----------------------------------------------------------------------
 # 3. 逐题跑完整链路
 # ----------------------------------------------------------------------
-def run_one(case: dict) -> dict:
+def run_one(case: dict, anchor_date: str, snapshot_date: str) -> dict:
     question = case["question"]
     record = {
         "id": case["id"], "module": case["module"], "question": question,
@@ -117,15 +139,20 @@ def run_one(case: dict) -> dict:
     }
     t0 = time.time()
     try:
-        link = build_context(question)
+        link = build_context(question, anchor_date=anchor_date)
         record["picked_tables"] = link.table_names
 
         llm = generate_sql(question, link.context_text,
-                           snapshot_date=config.SNAPSHOT_DATE)
+                           anchor_date=anchor_date,
+                           snapshot_date=snapshot_date)
         record["model"] = llm.model
         if llm.refusal:
             record["stage"] = "llm_refusal"
             record["error"] = llm.refusal
+            return record
+        if getattr(llm, "clarify", None):
+            record["stage"] = "llm_clarify"
+            record["error"] = "模型发起澄清：%s" % llm.clarify
             return record
         record["sql"] = llm.sql
 
@@ -160,12 +187,14 @@ def main() -> int:
     if not cases:
         print("未从 questions.md 解析到题目")
         return 1
-    print("共 %d 题，模型快照日=%s，开始逐题端到端验收（每题只问一次）...\n"
-          % (len(cases), config.SNAPSHOT_DATE))
+    anchor = get_anchor_date()
+    snapshot = get_snapshot_date()
+    print("共 %d 题，业务基准日 ANCHOR=%s（%s），快照日=%s，开始逐题端到端验收（每题只问一次）...\n"
+          % (len(cases), anchor.date, anchor.source, snapshot))
 
     records = []
     for i, case in enumerate(cases, 1):
-        rec = run_one(case)
+        rec = run_one(case, anchor.date, snapshot)
         records.append(rec)
         if rec["passed"]:
             tag = "PASS"
@@ -184,7 +213,7 @@ def main() -> int:
     passed = sum(1 for r in records if r["passed"])
     total = len(records)
     print("\n" + "=" * 60)
-    print("一次通过率：%d/%d = %.1f%%  （目标≥80%%即≥16题）"
+    print("一次通过率：%d/%d = %.1f%%  （双卷制：基线卷20题+泛化卷30题，每题只问一次不重试）"
           % (passed, total, passed / total * 100))
     print("=" * 60)
 
@@ -192,7 +221,10 @@ def main() -> int:
     out = {
         "run_time": stamp,
         "model": config.get_llm_settings().model,
-        "snapshot_date": config.SNAPSHOT_DATE,
+        "anchor_date": anchor.date,
+        "anchor_dynamic": anchor.dynamic,
+        "anchor_source": anchor.source,
+        "snapshot_date": snapshot,
         "total": total, "passed": passed,
         "pass_rate": round(passed / total, 4),
         "records": records,

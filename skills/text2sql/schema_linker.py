@@ -27,6 +27,7 @@ from typing import Dict, List, Optional
 
 # 路径统一由 config 收口
 from .config import PROJECT_ROOT, SEMANTIC_DIR, DB_PATH
+from .anchor import get_anchor_date
 
 MAX_TABLES = 4          # 候选表上限（Top2~4）
 MAX_FEW_SHOTS = 6       # 拼入的范例条数上限
@@ -51,6 +52,17 @@ NUMERIC_COL_RE = re.compile(
 )
 # 退化文本列的优先列名（像“名称/备注/编码/摘要”这类有业务含义的短文本）
 TEXT_PREFER_RE = re.compile(r"(name|remark|code|summary|text|desc)", re.I)
+
+# 语义层文档（metrics.md / few_shot.md / tables.md）以该日期为示例快照编写。
+# 数据滚动更新后锚点会变，拼 prompt 前把文档里的示例日期统一替换为
+# 运行时锚点（anchor.py），避免示例 SQL 的日期与 system prompt 注入的
+# ANCHOR 打架；数据未更新时锚点仍是 2026-09-24，替换为 no-op，评测基线不变。
+SEMANTIC_EXAMPLE_ANCHOR = "2026-09-24"
+
+
+def apply_anchor(text: str, anchor_date: str) -> str:
+    """把语义层文本中的示例基准日替换为运行时锚点（含 SQL 字面量与正文说明）。"""
+    return text.replace(SEMANTIC_EXAMPLE_ANCHOR, anchor_date)
 
 
 # ----------------------------------------------------------------------
@@ -303,11 +315,19 @@ def build_context(question: str,
                   kw_entries: Optional[List[dict]] = None,
                   table_sections: Optional[Dict[str, str]] = None,
                   shots: Optional[List[dict]] = None,
-                  con: Optional[sqlite3.Connection] = None) -> LinkResult:
-    """主入口：问题 -> LinkResult（含 context_text）。"""
+                  con: Optional[sqlite3.Connection] = None,
+                  anchor_date: Optional[str] = None) -> LinkResult:
+    """
+    主入口：问题 -> LinkResult（含 context_text）。
+
+    anchor_date：业务基准日；None = 运行时查库动态探测（anchor.py）。
+    拼入 prompt 的语义层文本（tables/metrics/few_shot）中的示例日期
+    会被统一替换为该锚点。
+    """
     kw_entries = kw_entries if kw_entries is not None else load_keywords()
     table_sections = table_sections if table_sections is not None else load_table_sections()
     shots = shots if shots is not None else load_few_shots()
+    anchor = anchor_date or get_anchor_date().date
 
     warnings: List[str] = []
     picked = score_and_pick(question, kw_entries)
@@ -324,9 +344,9 @@ def build_context(question: str,
     picked_shots = pick_few_shots(question, picked, shots)
     shot_map = {s["id"]: s for s in shots}
 
-    # ---- 拼上下文文本 ----
+    # ---- 拼上下文文本（语义层示例日期 -> 运行时锚点）----
     parts: List[str] = []
-    parts.append("# Schema 上下文\n")
+    parts.append("# Schema 上下文（业务基准日 ANCHOR = '%s'，即数据最新日）\n" % anchor)
     parts.append(_all_tables_overview(kw_entries))
     parts.append("\n## 一、本次问题选中的表（%d 张）\n" % len(picked))
     for p in picked:
@@ -334,7 +354,7 @@ def build_context(question: str,
         hit = "命中词: %s" % "、".join(p.matched) if p.matched else ""
         parts.append("### `%s`（%s，得分 %.1f）%s" % (p.table, tag, p.score, hit))
         sec = table_sections.get(p.table)
-        parts.append(sec if sec else "（tables.md 中未找到该表分节）")
+        parts.append(apply_anchor(sec, anchor) if sec else "（tables.md 中未找到该表分节）")
         parts.append("")
 
     ex = _examples_block(examples)
@@ -342,14 +362,14 @@ def build_context(question: str,
         parts.append(ex)
         parts.append("")
 
-    parts.append(load_join_hints())
+    parts.append(apply_anchor(load_join_hints(), anchor))
     parts.append("\n## 二、指标口径与强制规则（必须严格遵守）\n")
-    parts.append(load_metrics())
+    parts.append(apply_anchor(load_metrics(), anchor))
 
     if picked_shots:
         parts.append("\n## 三、相关 SQL 范例（模仿其口径与写法，不要照抄具体过滤值）\n")
         for sid in picked_shots:
-            parts.append(shot_map[sid]["text"])
+            parts.append(apply_anchor(shot_map[sid]["text"], anchor))
             parts.append("\n---\n")
 
     return LinkResult(

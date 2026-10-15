@@ -48,3 +48,18 @@ def test_docx_to_markdown():
     table_lines = [l for l in md_text.splitlines() if l.strip().startswith("|")]
     assert len(table_lines) >= 3
     assert "李四" in md_text
+
+
+def test_disguised_legacy_doc():
+    """用例④：旧版 .doc 改名成 .docx（骗过扩展名识别）。
+
+    应按文件头魔数（OLE2）识别为旧版二进制格式并给出可读中文提示，
+    而不是让 python-docx 抛出含内部临时路径的裸库报错。
+    """
+    # 旧版 Office 二进制格式（OLE2 复合文档）文件头，伪装成 .docx
+    legacy_bytes = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 2048
+    result = engine.convert(legacy_bytes, "old_report.docx", "转成 Markdown")
+
+    assert result["status"] == "error"
+    assert "旧版 Office 二进制格式" in result["error"]
+    assert "Package not found" not in result["error"]

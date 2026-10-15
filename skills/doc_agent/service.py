@@ -1,8 +1,12 @@
 """智能文档转换 Agent FastAPI 入口。"""
 
+import asyncio
 import logging
 import os
+import re
+import uuid
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +23,36 @@ logger = logging.getLogger("agent_app")
 router = APIRouter()
 
 
+# ----------------------------------------------------------------------
+# 上传文件敏感信息扫描：检测身份证号、手机号、API Key、银行卡号等
+# 策略：检测到敏感信息时记录日志并返回警告（不阻断转换，因为客户可能确实需要转换这些文件；
+#       生产环境可改为直接拒绝）。扫描仅在内存中进行，不留盘。
+# ----------------------------------------------------------------------
+_SENSITIVE_PATTERNS = {
+    "身份证号": re.compile(r'(?<!\d)[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)'),
+    "手机号": re.compile(r'(?<!\d)1[3-9]\d{9}(?!\d)'),
+    "API Key": re.compile(r'sk-[A-Za-z0-9]{20,}'),
+    "银行卡号": re.compile(r'(?<!\d)\d{16,19}(?!\d)'),
+}
+
+
+def scan_sensitive_info(content: bytes) -> list[str]:
+    """扫描文件内容中的敏感信息，返回检测到的敏感类型列表。
+
+    对二进制文件做尽力扫描（utf-8 解码忽略错误），可能漏检但不会误报。
+    """
+    try:
+        text = content.decode("utf-8", errors="ignore")
+    except Exception:
+        return []
+
+    found: list[str] = []
+    for name, pattern in _SENSITIVE_PATTERNS.items():
+        if pattern.search(text):
+            found.append(name)
+    return found
+
+
 class ConvertResponse(BaseModel):
     status: str
     plan: dict
@@ -27,6 +61,85 @@ class ConvertResponse(BaseModel):
     error: str = ""
     retry_count: int = 0
     reflection_log: list = []
+
+
+# ----------------------------------------------------------------------
+# 异步转换：提交即返回 task_id，后台执行，前端轮询进度
+# （大文件/慢转换不再长时间占用 HTTP 连接；任务表内存级，重启即清空，
+#   与 RAG 批量导入任务表同口径，生产可换 Redis + 任务队列）
+# ----------------------------------------------------------------------
+DOC_TASKS: dict[str, dict] = {}
+
+
+class ConvertAsyncResponse(BaseModel):
+    task_id: str
+    status: str          # processing
+    filename: str
+
+
+class DocTaskStatusResponse(BaseModel):
+    task_id: str
+    status: str                     # processing | completed | error
+    filename: str
+    result: Optional[dict] = None   # 完成时为 ConvertResponse 同构结果
+    error: str = ""
+
+
+async def _run_doc_task(task_id: str, content: bytes, filename: str, instruction: str):
+    """后台工作协程：转换是 CPU 密集（PDF/DOCX 解析），放线程池避免卡住轮询接口。"""
+    info = DOC_TASKS[task_id]
+    try:
+        result = await asyncio.to_thread(engine.convert, content, filename, instruction)
+        info["result"] = result
+        if result.get("status") == "ok":
+            info["status"] = "completed"
+        else:
+            info["status"] = "error"
+            info["error"] = result.get("error", "转换失败")
+        logger.info("异步转换完成: task=%s, status=%s", task_id, info["status"])
+    except Exception as e:
+        logger.exception("异步转换任务异常: task=%s", task_id)
+        info["status"] = "error"
+        info["error"] = str(e)
+
+
+@router.post("/convert/async", response_model=ConvertAsyncResponse)
+async def convert_async(file: UploadFile = File(...), instruction: str = Form(...)):
+    """提交异步转换任务：校验后立即返回 task_id，转换在后台执行，进度轮询 /tasks/{task_id}。"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="文件名为空")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    # 敏感信息扫描（仅记录日志，不阻断转换；生产可改为拒绝）
+    sensitive = scan_sensitive_info(content)
+    if sensitive:
+        logger.warning(
+            "上传文件含敏感信息类型: %s, file=%s", sensitive, file.filename
+        )
+
+    task_id = uuid.uuid4().hex[:12]
+    DOC_TASKS[task_id] = {
+        "task_id": task_id,
+        "status": "processing",
+        "filename": file.filename,
+        "result": None,
+        "error": "",
+    }
+    asyncio.create_task(_run_doc_task(task_id, content, file.filename, instruction))
+    logger.info("异步转换受理: task=%s, file=%s, instruction=%s", task_id, file.filename, instruction)
+    return ConvertAsyncResponse(task_id=task_id, status="processing", filename=file.filename)
+
+
+@router.get("/tasks/{task_id}", response_model=DocTaskStatusResponse)
+def get_doc_task(task_id: str):
+    """查询异步转换任务状态（前端 1 秒轮询）。"""
+    info = DOC_TASKS.get(task_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期（任务表在内存中，服务重启即清空）")
+    return DocTaskStatusResponse(**info)
 
 
 @router.get("/health")
@@ -46,6 +159,13 @@ async def convert(
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="文件为空")
+
+    # 敏感信息扫描（仅记录日志，不阻断转换；生产可改为拒绝）
+    sensitive = scan_sensitive_info(content)
+    if sensitive:
+        logger.warning(
+            "上传文件含敏感信息类型: %s, file=%s", sensitive, file.filename
+        )
 
     logger.info("转换请求: file=%s, instruction=%s", file.filename, instruction)
 

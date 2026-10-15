@@ -26,6 +26,27 @@ FORMAT_ALIASES = {
     "text": "txt",
 }
 
+# 旧版 Office 二进制格式（OLE2 复合文档）文件头魔数：.doc / .xls / .ppt 共用。
+# 新版 OOXML（.docx/.xlsx/.pptx）实为 ZIP 容器（魔数 PK\x03\x04），两者可按文件头区分。
+LEGACY_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def sniff_legacy_binary_format(head: bytes) -> bool:
+    """按文件头魔数判断是否为旧版 Office 二进制格式（OLE2 复合文档）。
+
+    扩展名识别只看后缀，用户把旧版 .doc 改名成 .docx 即可骗过；
+    故对 OOXML 目标格式（docx/xlsx）再用内容特征复核：旧版是 OLE2 复合文档、
+    新版是 ZIP 容器，文件头不同，可据此区分。
+
+    参数:
+        head: 文件开头若干字节（≥8 字节即可）。
+
+    返回:
+        True = 旧版二进制 Office 格式（.doc/.xls/.ppt）。
+    """
+    return head[:8] == LEGACY_OLE2_MAGIC
+
+
 # 目标格式关键词
 TARGET_KEYWORDS = {
     "markdown": ["markdown", "md", "标记"],
@@ -67,14 +88,29 @@ def _detect_source_format(filename: str) -> str:
 
 
 def _detect_target_format(instruction: str, source_format: str) -> str:
-    """从指令中推断目标格式。"""
+    """从指令中推断目标格式。
+
+    规则：目标格式关键词应出现在转换动词（转成/转为/转换/导出为/保存为）之后；
+    出现在动词之前的是源格式（如"把这个 Markdown 转成 Word"里的 Markdown），
+    不能误判为目标。无动词且只提及源格式时按未指定处理（默认转 markdown）。
+    """
     instr_lower = instruction.lower()
+    verb_positions = [
+        instr_lower.find(v)
+        for v in ("转成", "转为", "转换成", "转换", "导出为", "导出", "保存为", "输出为")
+        if instr_lower.find(v) >= 0
+    ]
+    verb_pos = min(verb_positions) if verb_positions else -1
+
     for fmt, keywords in TARGET_KEYWORDS.items():
         for kw in keywords:
-            if kw in instr_lower:
-                # 避免把源格式误判为目标格式
-                if fmt != source_format or "转成" in instruction or "转为" in instruction or "转换" in instruction:
-                    return fmt
+            pos = instr_lower.find(kw)
+            if pos < 0:
+                continue
+            # 关键词与源格式相同且出现在动词之前（或根本没有动词）→ 是源格式，跳过
+            if fmt == source_format and (verb_pos < 0 or pos < verb_pos):
+                continue
+            return fmt
     return ""
 
 

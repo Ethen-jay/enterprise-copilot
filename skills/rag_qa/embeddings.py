@@ -1,15 +1,32 @@
-﻿"""Embedding：通过 OpenAI 兼容 API（SiliconFlow）调用 BAAI/bge-base-zh-v1.5。"""
+﻿"""Embedding：通过 OpenAI 兼容 API（SiliconFlow）调用 BAAI/bge-large-zh-v1.5。
 
+bge 官方推荐 cosine + 向量归一化：所有向量在出口统一做 L2 归一化（幂等，
+即使 API 已返回单位向量也不受影响）。归一化后 L2 距离与 cosine 相似度
+排序严格等价（||a-b||² = 2-2·cosθ），与 collection 的 hnsw:space 配置解耦。
+
+外部 API 调用经 api_retry 指数退避重试（429/5xx/网络异常）。
+"""
+
+import math
 from typing import List
 
 import httpx
 from langchain_core.embeddings import Embeddings
 
+from skills.rag_qa.api_retry import retry_sync
 from skills.rag_qa.config import EMBED_API_KEY, EMBED_BASE_URL, EMBED_MODEL
 
 # 每批最大文本数，避免请求体过大导致超时
 BATCH_SIZE = 64
 MAX_WORKERS = 8
+
+
+def _normalize(vec: List[float]) -> List[float]:
+    """L2 归一化为单位向量；零范数向量原样返回（防除零）。"""
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm < 1e-12:
+        return vec
+    return [x / norm for x in vec]
 
 
 class APIEmbeddings(Embeddings):
@@ -31,18 +48,23 @@ class APIEmbeddings(Embeddings):
         self._client = httpx.Client(timeout=120.0)
 
     def _post_batch(self, texts: List[str]) -> List[List[float]]:
-        """单批 embedding 请求。"""
+        """单批 embedding 请求（限流/5xx/网络异常自动指数退避重试）。"""
         url = f"{self.base_url}/embeddings"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
         payload = {"model": self.model, "input": texts}
-        resp = self._client.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+
+        def _do_request() -> dict:
+            resp = self._client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+
+        data = retry_sync(_do_request, op=f"embeddings({len(texts)})")
         items = sorted(data["data"], key=lambda x: x["index"])
-        return [item["embedding"] for item in items]
+        # 出口统一 L2 归一化（幂等）：覆盖 embed_documents 与 embed_query 两条路径
+        return [_normalize(item["embedding"]) for item in items]
 
     def _post(self, texts: List[str]) -> List[List[float]]:
         """分批并行调用 embedding API。"""

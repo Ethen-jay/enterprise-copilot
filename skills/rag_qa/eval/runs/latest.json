@@ -1,0 +1,766 @@
+{
+  "run_time": "20261014_162214",
+  "engine": "skills.rag_qa.rag_engine.chat",
+  "user": "default",
+  "total": 15,
+  "passed": 15,
+  "pass_rate": 1.0,
+  "answerable": {
+    "total": 10,
+    "passed": 10,
+    "pass_rate": 1.0
+  },
+  "no_evidence": {
+    "total": 5,
+    "passed": 5,
+    "pass_rate": 1.0
+  },
+  "records": [
+    {
+      "id": "R01",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "北斗三号系统是什么时候正式开通全球服务的？",
+      "expected_points": [
+        "2020年7月31日"
+      ],
+      "answer": "北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正式向全球用户提供高精度定位服务。\n\n[来源: benchmark_test.md#70]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 70,
+          "content": "第561段: 北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正式向全球用户提供高精度定位服务。\r\n\r\n第562段: 北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 9,
+          "content": "第74段: 北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正式向全球用户提供高精度定位服务。\r\n\r\n第75段: 北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 14,
+          "content": "第114段: 空间段由若干地球静止轨道卫星、倾斜地球同步轨道卫星和中圆地球轨道卫星组成，为全球用户提供定位、导航和授时服务。\r\n\r\n第115段: 北斗三号系统于2020年7月31日正式开通全球服务，标"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "2020年7月31日",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 5.1
+    },
+    {
+      "id": "R02",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "北斗系统的定位精度优于多少米？",
+      "expected_points": [
+        "10米"
+      ],
+      "answer": "北斗系统的定位精度优于10米。[来源: benchmark_test.md#18]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 18,
+          "content": "第146段: 北斗系统的定位精度优于10米，测速精度优于0.2米/秒，授时精度优于20纳秒，在亚太地区性能更优。\r\n\r\n第147段: 北斗系统的定位精度优于10米，测速精度优于0.2米/秒，授时精度优"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 5,
+          "content": "第42段: 北斗系统的定位精度优于10米，测速精度优于0.2米/秒，授时精度优于20纳秒，在亚太地区性能更优。\r\n\r\n第43段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 108,
+          "content": "第866段: 北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正式向全球用户提供高精度定位服务。\r\n\r\n第867段: 北斗系统的定位精度优于10米，测速精度优于0.2米/秒，授时精度"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "10米",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 3.0
+    },
+    {
+      "id": "R03",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "北斗系统的授时精度优于多少纳秒？",
+      "expected_points": [
+        "20纳秒"
+      ],
+      "answer": "北斗系统的授时精度优于20纳秒。\n\n[来源: benchmark_test.md#108]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 108,
+          "content": "第866段: 北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正式向全球用户提供高精度定位服务。\r\n\r\n第867段: 北斗系统的定位精度优于10米，测速精度优于0.2米/秒，授时精度"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 88,
+          "content": "第706段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由空间段、地面段和用户段三部分组成。\r\n\r\n第707段: 北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 125,
+          "content": "第1002段: 地面段包括主控站、注入站和监测站等，负责完成导航电文的生成、上传和系统管理等功能。\r\n\r\n第1003段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由空间段、地面段和"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "20纳秒",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 3.2
+    },
+    {
+      "id": "R04",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "北斗系统的测速精度优于多少？",
+      "expected_points": [
+        "0.2米/秒或0.2米每秒"
+      ],
+      "answer": "北斗系统的测速精度优于0.2米/秒。\n\n[来源: benchmark_test.md#5]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 5,
+          "content": "第42段: 北斗系统的定位精度优于10米，测速精度优于0.2米/秒，授时精度优于20纳秒，在亚太地区性能更优。\r\n\r\n第43段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 108,
+          "content": "第866段: 北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正式向全球用户提供高精度定位服务。\r\n\r\n第867段: 北斗系统的定位精度优于10米，测速精度优于0.2米/秒，授时精度"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 125,
+          "content": "第1002段: 地面段包括主控站、注入站和监测站等，负责完成导航电文的生成、上传和系统管理等功能。\r\n\r\n第1003段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由空间段、地面段和"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "0.2米/秒或0.2米每秒",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 3.0
+    },
+    {
+      "id": "R05",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "北斗卫星导航系统由哪三部分组成？",
+      "expected_points": [
+        "空间段",
+        "地面段",
+        "用户段"
+      ],
+      "answer": "北斗卫星导航系统（BDS）由空间段、地面段和用户段三部分组成。\n\n[来源: benchmark_test.md#93]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 93,
+          "content": "第746段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由空间段、地面段和用户段三部分组成。\r\n\r\n第747段: 北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 63,
+          "content": "第506段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由空间段、地面段和用户段三部分组成。\r\n\r\n第507段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由空间段"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 19,
+          "content": "第154段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由空间段、地面段和用户段三部分组成。\r\n\r\n第155段: 地面段包括主控站、注入站和监测站等，负责完成导航电文的生成、上传和系"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "空间段",
+          "hit": true
+        },
+        {
+          "point": "地面段",
+          "hit": true
+        },
+        {
+          "point": "用户段",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 3.0
+    },
+    {
+      "id": "R06",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "北斗地基增强系统可提供什么级别的定位服务？",
+      "expected_points": [
+        "厘米级",
+        "毫米级"
+      ],
+      "answer": "北斗地基增强系统可提供厘米级乃至毫米级定位服务，满足测绘和精密农业需求。\n\n[来源: benchmark_test.md#46]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 46,
+          "content": "第370段: 在高精度应用方面，北斗地基增强系统可提供厘米级乃至毫米级定位服务，满足测绘和精密农业需求。\r\n\r\n第371段: 在高精度应用方面，北斗地基增强系统可提供厘米级乃至毫米级定位服务，满足测绘"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 117,
+          "content": "第938段: 在高精度应用方面，北斗地基增强系统可提供厘米级乃至毫米级定位服务，满足测绘和精密农业需求。\r\n\r\n第939段: 相比北斗二号，北斗三号新增了星间链路技术、新型原子钟和国际搜救功能，系统性"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 1,
+          "content": "第9段: 在高精度应用方面，北斗地基增强系统可提供厘米级乃至毫米级定位服务，满足测绘和精密农业需求。\r\n\r\n第10段: 地面段包括主控站、注入站和监测站等，负责完成导航电文的生成、上传和系统管理等功能"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "厘米级",
+          "hit": true
+        },
+        {
+          "point": "毫米级",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 2.8
+    },
+    {
+      "id": "R07",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "相比北斗二号，北斗三号新增了哪些技术或功能？",
+      "expected_points": [
+        "星间链路",
+        "原子钟",
+        "搜救"
+      ],
+      "answer": "相比北斗二号，北斗三号新增了星间链路技术、新型原子钟和国际搜救功能，系统性能大幅提升。\n\n[来源: benchmark_test.md#2]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 2,
+          "content": "第17段: 相比北斗二号，北斗三号新增了星间链路技术、新型原子钟和国际搜救功能，系统性能大幅提升。\r\n\r\n第18段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS和Galil"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 120,
+          "content": "第962段: 相比北斗二号，北斗三号新增了星间链路技术、新型原子钟和国际搜救功能，系统性能大幅提升。\r\n\r\n第963段: 用户段包括各类北斗兼容芯片、模块和终端，广泛应用于交通运输、农业渔业、救灾减灾"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 38,
+          "content": "第306段: 相比北斗二号，北斗三号新增了星间链路技术、新型原子钟和国际搜救功能，系统性能大幅提升。\r\n\r\n第307段: 地面段包括主控站、注入站和监测站等，负责完成导航电文的生成、上传和系统管理等功"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "星间链路",
+          "hit": true
+        },
+        {
+          "point": "原子钟",
+          "hit": true
+        },
+        {
+          "point": "搜救",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 3.0
+    },
+    {
+      "id": "R08",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "北斗系统的建设遵循哪些原则？",
+      "expected_points": [
+        "自主",
+        "开放",
+        "兼容",
+        "渐进"
+      ],
+      "answer": "北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS和Galileo系统兼容互操作。\n\n[来源: benchmark_test.md#8]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 69,
+          "content": "第554段: 用户段包括各类北斗兼容芯片、模块和终端，广泛应用于交通运输、农业渔业、救灾减灾和公共安全等领域。\r\n\r\n第555段: 空间段由若干地球静止轨道卫星、倾斜地球同步轨道卫星和中圆地球轨道卫星"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 8,
+          "content": "第66段: 空间段由若干地球静止轨道卫星、倾斜地球同步轨道卫星和中圆地球轨道卫星组成，为全球用户提供定位、导航和授时服务。\r\n\r\n第67段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、G"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 56,
+          "content": "第450段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字信息，其他GNSS系统不具备此能力。\r\n\r\n第451段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLO"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "自主",
+          "hit": true
+        },
+        {
+          "point": "开放",
+          "hit": true
+        },
+        {
+          "point": "兼容",
+          "hit": true
+        },
+        {
+          "point": "渐进",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 3.2
+    },
+    {
+      "id": "R09",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "北斗系统的短报文通信功能有什么特点？",
+      "expected_points": [
+        "短报文",
+        "卫星"
+      ],
+      "answer": "北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字信息，其他GNSS系统不具备此能力。\n\n[来源: benchmark_test.md#47]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 47,
+          "content": "第378段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字信息，其他GNSS系统不具备此能力。\r\n\r\n第379段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 16,
+          "content": "第130段: 空间段由若干地球静止轨道卫星、倾斜地球同步轨道卫星和中圆地球轨道卫星组成，为全球用户提供定位、导航和授时服务。\r\n\r\n第131段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 114,
+          "content": "第914段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字信息，其他GNSS系统不具备此能力。\r\n\r\n第915段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "短报文",
+          "hit": true
+        },
+        {
+          "point": "卫星",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 3.0
+    },
+    {
+      "id": "R10",
+      "category": "有答案",
+      "kind": "has_answer",
+      "question": "北斗系统与哪些其他卫星导航系统兼容互操作？",
+      "expected_points": [
+        "GPS",
+        "GLONASS",
+        "Galileo"
+      ],
+      "answer": "北斗系统与GPS、GLONASS和Galileo系统兼容互操作。[来源: benchmark_test.md#56]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 56,
+          "content": "第450段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字信息，其他GNSS系统不具备此能力。\r\n\r\n第451段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLO"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 17,
+          "content": "第138段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS和Galileo系统兼容互操作。\r\n\r\n第139段: 用户段包括各类北斗兼容芯片、模块和终端，广泛应用于交通运输、农"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 8,
+          "content": "第66段: 空间段由若干地球静止轨道卫星、倾斜地球同步轨道卫星和中圆地球轨道卫星组成，为全球用户提供定位、导航和授时服务。\r\n\r\n第67段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、G"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "GPS",
+          "hit": true
+        },
+        {
+          "point": "GLONASS",
+          "hit": true
+        },
+        {
+          "point": "Galileo",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 2.7
+    },
+    {
+      "id": "R11",
+      "category": "无依据",
+      "kind": "no_evidence",
+      "question": "北斗导航系统建设至今的总投资金额是多少？",
+      "expected_points": [],
+      "answer": "根据现有文档无法回答该问题。\n\n参考片段中介绍了北斗系统的发展历程、技术特点、系统组成和应用领域等内容，但均未提及建设至今的总投资金额。\n\n[来源: 中文测试文档.md#0][来源: benchmark_test.md#17][来源: benchmark_test.md#6]",
+      "citations": [
+        {
+          "file": "中文测试文档.md",
+          "chunk": 0,
+          "content": "# 北斗卫星导航系统简介\n\n北斗卫星导航系统（BeiDou Navigation Satellite System，简称 BDS）是中国自行研制的全球卫星导航系统，也是继 GPS、GLONASS 之后",
+          "heading": "北斗卫星导航系统简介"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 17,
+          "content": "第138段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS和Galileo系统兼容互操作。\r\n\r\n第139段: 用户段包括各类北斗兼容芯片、模块和终端，广泛应用于交通运输、农"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 6,
+          "content": "第50段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS和Galileo系统兼容互操作。\r\n\r\n第51段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONA"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "系统拒答",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 2.9
+    },
+    {
+      "id": "R12",
+      "category": "无依据",
+      "kind": "no_evidence",
+      "question": "北斗三号卫星的设计寿命是多少年？",
+      "expected_points": [],
+      "answer": "根据现有文档无法回答该问题。\n\n[来源: 中文测试文档.md#0]",
+      "citations": [
+        {
+          "file": "中文测试文档.md",
+          "chunk": 0,
+          "content": "# 北斗卫星导航系统简介\n\n北斗卫星导航系统（BeiDou Navigation Satellite System，简称 BDS）是中国自行研制的全球卫星导航系统，也是继 GPS、GLONASS 之后",
+          "heading": "北斗卫星导航系统简介"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 121,
+          "content": "第970段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS和Galileo系统兼容互操作。\r\n\r\n第971段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 99,
+          "content": "第794段: 北斗系统的定位精度优于10米，测速精度优于0.2米/秒，授时精度优于20纳秒，在亚太地区性能更优。\r\n\r\n第795段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "系统拒答",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 3.1
+    },
+    {
+      "id": "R13",
+      "category": "无依据",
+      "kind": "no_evidence",
+      "question": "北斗系统的首席总设计师是谁？",
+      "expected_points": [],
+      "answer": "根据现有文档无法回答该问题。",
+      "citations": [],
+      "reflection": {
+        "passed": true,
+        "no_answer": true,
+        "reason": "low_relevance",
+        "max_score": 0.0658,
+        "log": []
+      },
+      "checks": [
+        {
+          "point": "系统拒答",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 1.2
+    },
+    {
+      "id": "R14",
+      "category": "无依据",
+      "kind": "no_evidence",
+      "question": "北斗短报文通信一次最多能发送多少个汉字？",
+      "expected_points": [],
+      "answer": "根据现有文档无法回答该问题。\n\n参考片段中仅提到北斗系统具备短报文通信功能、可发送简短文字信息，但未提及单次最多可发送多少个汉字的具体数值。\n\n[来源: benchmark_test.md#114]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 114,
+          "content": "第914段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字信息，其他GNSS系统不具备此能力。\r\n\r\n第915段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 47,
+          "content": "第378段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字信息，其他GNSS系统不具备此能力。\r\n\r\n第379段: 北斗卫星导航系统（BDS）是中国自行研制的全球卫星导航系统，由"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 115,
+          "content": "第922段: 空间段由若干地球静止轨道卫星、倾斜地球同步轨道卫星和中圆地球轨道卫星组成，为全球用户提供定位、导航和授时服务。\r\n\r\n第923段: 北斗系统的短报文通信功能是其独特优势，用户可以通过卫星"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "系统拒答",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 3.3
+    },
+    {
+      "id": "R15",
+      "category": "无依据",
+      "kind": "no_evidence",
+      "question": "北斗系统的建设运营由哪家企业负责？",
+      "expected_points": [],
+      "answer": "根据现有文档无法回答该问题。\n\n参考片段中仅介绍了北斗系统的组成（空间段、地面段、用户段）、建设原则、功能特点等内容，未提及负责建设运营的具体企业信息。\n\n[来源: benchmark_test.md#17]",
+      "citations": [
+        {
+          "file": "benchmark_test.md",
+          "chunk": 17,
+          "content": "第138段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS和Galileo系统兼容互操作。\r\n\r\n第139段: 用户段包括各类北斗兼容芯片、模块和终端，广泛应用于交通运输、农"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 6,
+          "content": "第50段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS和Galileo系统兼容互操作。\r\n\r\n第51段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONA"
+        },
+        {
+          "file": "benchmark_test.md",
+          "chunk": 8,
+          "content": "第66段: 空间段由若干地球静止轨道卫星、倾斜地球同步轨道卫星和中圆地球轨道卫星组成，为全球用户提供定位、导航和授时服务。\r\n\r\n第67段: 北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、G"
+        }
+      ],
+      "reflection": {
+        "passed": true,
+        "log": [
+          {
+            "attempt": 0,
+            "passed": true,
+            "cause": null,
+            "adjustment": null,
+            "issues": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "point": "系统拒答",
+          "hit": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "elapsed_sec": 2.8
+    }
+  ]
+}

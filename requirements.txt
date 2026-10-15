@@ -35,6 +35,9 @@ pypandoc>=1.13.0
 weasyprint>=60.0
 fpdf2>=2.7.0
 
+# ===== 扫描版 PDF OCR 兜底（rag_qa，PP-OCRv4 + onnxruntime CPU 推理） =====
+rapidocr-onnxruntime>=1.4.4
+
 # ===== 中文分词（反思校验关键词提取） =====
 jieba>=0.42.1
 
@@ -49,3 +52,7 @@ sqlparse>=0.4.4
 # ===== 测试 =====
 pytest>=8.0.0
 pytest-asyncio>=0.24.0
+
+# ===== 生产级限流（可选，仅 gateway/middleware_prod.py 示范用，不强制安装） =====
+# 接入方式：pip install redis>=5.0.0 + 本地起 Redis 服务
+redis>=5.0.0

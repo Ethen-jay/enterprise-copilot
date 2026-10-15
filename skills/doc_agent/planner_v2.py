@@ -243,7 +243,7 @@ async def llm_parse_instruction(instruction: str, filename: str) -> dict:
 
     仅在规则路由无法确定目标格式时调用。
     """
-    from skills.rag_qa.llm_client import _get_llm
+    from skills.doc_agent.llm_client import _get_llm
     from langchain_core.messages import HumanMessage, SystemMessage
 
     prompt = f"""请解析以下文档转换指令，提取结构化信息。

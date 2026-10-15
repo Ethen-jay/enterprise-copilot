@@ -21,6 +21,7 @@ main.py —— FastAPI 服务入口（阶段 D）
     python -m uvicorn app.main:app --host 127.0.0.1 --port 8010
 """
 
+import re
 import sqlite3
 from typing import List, Optional
 
@@ -30,10 +31,34 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import config
+from .anchor import get_anchor_date, get_snapshot_date
 from .schema_linker import build_context, log_link
-from .llm_client import generate_sql, LLMError
+from .llm_client import generate_sql, regenerate_sql, LLMError
 from .sql_guard import check_sql
 from .executor import execute_select, ReadonlyExecError
+
+
+# ----------------------------------------------------------------------
+# SQL 报错脱敏：回喂模型前剥掉文件路径/系统信息，只保留错误类型与问题点
+# 模型已有 schema 上下文，表名/列名在报错中出现不是信息泄漏；
+# 需防的是 SQLite 内部路径、traceback 等非业务信息泄漏。
+# ----------------------------------------------------------------------
+_PATH_RE = re.compile(r'(file:|/[A-Za-z]:\\|/[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.(db|sqlite|sqlite3))', re.IGNORECASE)
+_TRACEBACK_RE = re.compile(r'Traceback \(most recent call last\):[\s\S]*', re.IGNORECASE)
+_LINE_RE = re.compile(r'line \d+,.*$', re.MULTILINE)
+
+
+def sanitize_sql_error(err: str) -> str:
+    """对 SQLite 执行错误做脱敏，保留可用于 SQL 修复的信息，剥掉系统内部信息。"""
+    if not err:
+        return "SQL 执行失败"
+    s = str(err)
+    s = _TRACEBACK_RE.sub("", s)       # 删 Python traceback
+    s = _PATH_RE.sub("[internal_path]", s)  # 脱敏文件路径
+    s = _LINE_RE.sub("", s)            # 删 "line N" 调试信息
+    s = re.sub(r'\s+', ' ', s).strip()
+    # 兜底：过长截断，防止异常信息过大占满 prompt
+    return s[:300] if s else "SQL 执行失败"
 
 # 路由抽象成 APIRouter：独立启动（本文件 app）与 gateway 统一入口（单端口 8000）复用同一份
 router = APIRouter()
@@ -44,6 +69,7 @@ router = APIRouter()
 # ----------------------------------------------------------------------
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, description="用户的中文问题")
+    clarification: str = Field("", description="上一轮 CLARIFY 后用户补充的信息，首轮为空")
 
 
 class AskResponse(BaseModel):
@@ -59,6 +85,7 @@ class AskResponse(BaseModel):
     warnings: List[str] = []
     model: str = ""
     error: Optional[str] = None    # 非致命错误提示（无法回答/守卫拒绝/SQL执行失败）
+    clarify: Optional[str] = None  # 模型要求补充信息时的澄清问题（不执行 SQL）
 
 
 # ----------------------------------------------------------------------
@@ -89,12 +116,15 @@ def health():
         llm_info = "未配置 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL"
         llm_ready = False
 
+    anchor = get_anchor_date()
     return {
         "status": "ok" if db_ok and llm_ready else "degraded",
         "database": {"path": str(config.DB_PATH), "ok": db_ok, "tables": table_count},
         "llm": {"ready": llm_ready, "info": llm_info},
-        "anchor_date": config.ANCHOR_DATE,
-        "snapshot_date": config.SNAPSHOT_DATE,
+        "anchor_date": anchor.date,
+        "anchor_dynamic": anchor.dynamic,
+        "anchor_source": anchor.source,
+        "snapshot_date": get_snapshot_date(),
     }
 
 
@@ -106,9 +136,13 @@ def ask(req: AskRequest):
     question = req.question.strip()
     resp = AskResponse(question=question)
 
+    # 动态锚点：一次请求内取一次，schema 上下文与 system prompt 保持同一锚点
+    anchor_info = get_anchor_date()
+    print("[Ask] 动态锚点：%s（%s）" % (anchor_info.date, anchor_info.source))
+
     # 1) Schema Linking（选表异常不致命：仍把全量表清单交给模型试一次）
     try:
-        link = build_context(question)
+        link = build_context(question, anchor_date=anchor_info.date)
         log_link(link)
         resp.picked_tables = link.table_names
         resp.few_shots = link.few_shots
@@ -119,10 +153,12 @@ def ask(req: AskRequest):
         resp.warnings.append("Schema 上下文组装失败：%s" % e)
         schema_context = ""
 
-    # 2) 调大模型生成 SQL
+    # 2) 调大模型生成 SQL（可能是多轮：携带用户对上一轮 CLARIFY 的补充）
     try:
         llm_result = generate_sql(question, schema_context,
-                                  snapshot_date=config.SNAPSHOT_DATE)
+                                  anchor_date=anchor_info.date,
+                                  snapshot_date=get_snapshot_date(),
+                                  clarification=req.clarification.strip())
     except LLMError as e:
         resp.error = str(e)
         return resp
@@ -134,6 +170,11 @@ def ask(req: AskRequest):
         resp.error = llm_result.refusal
         return resp
 
+    # 模型要求用户补充信息：返回澄清问题，本轮不生成/不执行 SQL
+    if llm_result.clarify:
+        resp.clarify = llm_result.clarify
+        return resp
+
     resp.sql = llm_result.sql
 
     # 3) 只读守卫
@@ -143,12 +184,38 @@ def ask(req: AskRequest):
         return resp
     resp.sql = guarded.sql  # 可能被自动补过 LIMIT，以最终版回显
 
-    # 4) 只读执行
+    # 4) 只读执行；失败时把原 SQL + 报错回喂模型自动修正，再走一遍守卫+执行（最多 1 次）
     try:
         result = execute_select(guarded.sql)
-    except ReadonlyExecError as e:
-        resp.error = str(e)
-        return resp
+    except ReadonlyExecError as first_err:
+        print("[Ask] SQL 执行失败，自动修复重试：%s" % first_err)
+        try:
+            fix = regenerate_sql(question, schema_context, guarded.sql,
+                                 sanitize_sql_error(str(first_err)),
+                                 anchor_date=anchor_info.date,
+                                 snapshot_date=get_snapshot_date())
+        except LLMError as e:
+            resp.error = "%s（自动修复时调用模型失败：%s）" % (first_err, e)
+            return resp
+        # 模型判断问题本身答不了
+        if fix.refusal:
+            resp.error = "%s（自动修复：%s）" % (first_err, fix.refusal)
+            return resp
+        # 修正版仍须过只读守卫，杜绝修复环节引入写操作
+        g2 = check_sql(fix.sql)
+        if not g2.ok:
+            resp.error = "%s（修正版 SQL 未通过只读守卫：%s）" % (first_err, g2.reason)
+            return resp
+        try:
+            result = execute_select(g2.sql)
+        except ReadonlyExecError as e2:
+            resp.error = "%s；已自动修正重试仍失败：%s" % (first_err, e2)
+            return resp
+        # 修复成功：回显修正后的 SQL 与口径，并提示用户
+        resp.sql = g2.sql
+        if fix.explanation:
+            resp.explanation = fix.explanation
+        resp.warnings.append("首次生成的 SQL 执行失败，已把报错回喂模型自动修正后重试成功")
 
     resp.columns = result["columns"]
     resp.rows = result["rows"]

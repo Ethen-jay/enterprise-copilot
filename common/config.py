@@ -14,6 +14,7 @@ common/config.py —— 三技能共享配置的唯一来源（F1 纪律 #3）
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -48,6 +49,25 @@ def get_llm_settings() -> LLMSettings:
     for name, val in (("LLM_BASE_URL", base_url), ("LLM_API_KEY", api_key), ("LLM_MODEL", model)):
         if not val:
             raise RuntimeError("环境变量 %s 未配置，请检查项目根 .env" % name)
+    return LLMSettings(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        timeout=float(os.getenv("LLM_TIMEOUT", "60")),
+        temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
+    )
+
+
+def get_fallback_llm_settings() -> Optional[LLMSettings]:
+    """读取降级用的云模型配置（本地 vLLM 挂掉时回退到公网 API）。
+
+    未配置 FALLBACK_LLM_BASE_URL 时返回 None（不启用降级）。
+    """
+    base_url = os.getenv("FALLBACK_LLM_BASE_URL", "").strip()
+    api_key = os.getenv("FALLBACK_LLM_API_KEY", "").strip()
+    model = os.getenv("FALLBACK_LLM_MODEL", "").strip()
+    if not base_url or not api_key or not model:
+        return None
     return LLMSettings(
         base_url=base_url,
         api_key=api_key,

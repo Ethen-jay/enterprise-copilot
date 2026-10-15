@@ -196,8 +196,7 @@
   <header>🤖 智能文档助手</header>
 
   <div class="tabs">
-    <div class="tab active" onclick="switchTab('rag')">📚 知识问答</div>
-    <div class="tab" onclick="switchTab('convert')">🔄 文档转换</div>
+    <div class="tab active">📚 知识问答</div>
   </div>
 
   <!-- ===== 知识问答 ===== -->
@@ -220,47 +219,16 @@
     </div>
   </div>
 
-  <!-- ===== 文档转换 ===== -->
-  <div id="tab-convert" class="tab-content">
-    <div class="convert-area">
-      <div class="convert-card">
-        <h3>📄 文档格式转换</h3>
-        <div class="form-group">
-          <label>上传文件（PDF / Markdown / DOCX / Excel）</label>
-          <input type="file" id="convertFile" accept=".pdf,.md,.markdown,.docx,.html,.xlsx,.xls">
-        </div>
-        <div class="form-group">
-          <label>转换指令</label>
-          <textarea id="instruction" placeholder="例如：把这个 PDF 转成 Markdown，保留表格"></textarea>
-          <div class="quick-flags">
-            <button onclick="setInstruction('转成 Markdown，保留表格')">转 Markdown</button>
-            <button onclick="setInstruction('转成 Word 文档')">转 Word</button>
-            <button onclick="setInstruction('转成 HTML')">转 HTML</button>
-            <button onclick="setInstruction('转成 PDF')">转 PDF</button>
-            <button onclick="setInstruction('转成 Excel')">转 Excel</button>
-            <button onclick="setInstruction('转成 Markdown，并做摘要')">摘要</button>
-          </div>
-        </div>
-        <button class="convert-btn" id="convertBtn" onclick="doConvert()">开始转换</button>
-        <div id="convertResult" class="convert-result"></div>
-      </div>
-    </div>
-  </div>
-
 <script>
-const AGENT_URL = 'http://localhost:8002';
+/* 本页面为 rag_qa 独立启动（8001 端口）时的单技能页面，只含知识问答；
+   文档转换请使用统一前端（gateway 8000 的 web/index.html）或 doc_agent 独立服务。 */
 
-/* ===== 标签页切换 ===== */
+/* ===== 标签页切换（仅知识问答单页签） ===== */
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  if (name === 'rag') {
-    document.querySelectorAll('.tab')[0].classList.add('active');
-    document.getElementById('tab-rag').classList.add('active');
-  } else {
-    document.querySelectorAll('.tab')[1].classList.add('active');
-    document.getElementById('tab-convert').classList.add('active');
-  }
+  document.querySelectorAll('.tab')[0].classList.add('active');
+  document.getElementById('tab-rag').classList.add('active');
 }
 
 /* ===== 知识问答 ===== */
@@ -458,60 +426,6 @@ async function sendQuestion() {
 question.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); sendQuestion(); }
 });
-
-/* ===== 文档转换 ===== */
-const convertFile = document.getElementById('convertFile');
-const instruction = document.getElementById('instruction');
-const convertBtn = document.getElementById('convertBtn');
-const convertResult = document.getElementById('convertResult');
-
-function setInstruction(text) {
-  instruction.value = text;
-}
-
-async function doConvert() {
-  const file = convertFile.files[0];
-  const inst = instruction.value.trim();
-  if (!file) { showConvertResult('err', '请先选择文件'); return; }
-  if (!inst) { showConvertResult('err', '请输入转换指令'); return; }
-
-  convertBtn.disabled = true;
-  convertBtn.textContent = '转换中...';
-  showConvertResult('ok', '⏳ 正在转换，请稍候...');
-
-  const form = new FormData();
-  form.append('file', file);
-  form.append('instruction', inst);
-
-  try {
-    const resp = await fetch(`${AGENT_URL}/convert`, { method: 'POST', body: form });
-    const data = await resp.json();
-
-    if (data.status === 'ok') {
-      const v = data.validation || {};
-      const issues = v.issues && v.issues.length ? `，问题：${v.issues.join('; ')}` : '';
-      const retry = data.retry_count > 0 ? `（重试 ${data.retry_count} 次）` : '';
-      const plan = data.plan || {};
-      let html = `✅ 转换成功${retry}<br>`;
-      html += `<span class="meta">${plan.source_format || ''} → ${plan.target_format || ''}，校验：${v.passed ? '通过' : '未通过'}${issues}</span><br>`;
-      html += `<a class="download-link" href="${AGENT_URL}/download/${data.output_filename}" target="_blank">📥 下载 ${data.output_filename}</a>`;
-      showConvertResult('ok', html, true);
-    } else {
-      const retry = data.retry_count > 0 ? `（重试 ${data.retry_count} 次后仍失败）` : '';
-      showConvertResult('err', `❌ 转换失败${retry}：${data.error || '未知错误'}`);
-    }
-  } catch (e) {
-    showConvertResult('err', `❌ 网络错误: ${e.message}<br><span class="meta">请确认文档转换服务（端口 8002）已启动</span>`);
-  }
-  convertBtn.disabled = false;
-  convertBtn.textContent = '开始转换';
-}
-
-function showConvertResult(type, html, isHtml) {
-  convertResult.className = 'convert-result ' + type;
-  if (isHtml) convertResult.innerHTML = html;
-  else convertResult.textContent = html;
-}
 </script>
 </body>
 </html>

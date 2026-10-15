@@ -88,11 +88,31 @@
   .btn.small { padding: 7px 14px; font-size: 13px; border-radius: 8px; }
   .btn.gray { background: #94a3b8; box-shadow: none; font-weight: 500; }
   .btn.gray:hover { background: #7d8ba1; }
+  .btn.gray.warn { background: #d97706; box-shadow: 0 4px 12px rgba(217,119,6,.3);
+                   padding: 7px 12px; white-space: normal; line-height: 1.25; }
+  .btn.gray.warn:hover { background: #b45309; }
   .examples { margin-top: 12px; font-size: 13px; color: var(--muted); }
   .examples button { margin: 5px 8px 0 0; padding: 5px 13px; font-size: 13px; color: var(--brand);
                      background: #f0f4ff; border: 1px solid #dbe3fd; border-radius: 999px;
                      cursor: pointer; transition: all .15s ease; }
   .examples button:hover { background: #e3eafe; border-color: var(--brand); }
+
+  /* ---------- 知识库文档管理 ---------- */
+  .doc-manager { margin-top: 14px; padding: 12px 14px; background: #f8faff;
+                 border: 1px solid var(--line); border-radius: 11px; }
+  .doc-manager-head { display: flex; align-items: center; justify-content: space-between;
+                      margin-bottom: 8px; font-size: 13px; color: #334155; }
+  .doc-list { display: flex; flex-direction: column; gap: 6px; }
+  .doc-item { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+              padding: 7px 11px; background: #fff; border: 1px solid var(--line);
+              border-radius: 9px; font-size: 13px; }
+  .doc-item .doc-name { color: #1e293b; word-break: break-all; }
+  .doc-item .doc-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .doc-del { padding: 3px 11px; font-size: 12px; color: #dc2626; background: #fff;
+             border: 1px solid #fecaca; border-radius: 7px; cursor: pointer;
+             white-space: nowrap; transition: all .15s ease; }
+  .doc-del:hover { background: #fef2f2; border-color: #fca5a5; }
+  .doc-del:disabled { opacity: .5; cursor: not-allowed; }
 
   /* ---------- 结果区 ---------- */
   .result { margin-top: 18px; }
@@ -252,6 +272,23 @@
         <button id="ragIngestBtn" class="btn gray small">上传入库</button>
         <span id="ragIngestMsg" class="hint"></span>
       </div>
+      <div class="file-row">
+        <input type="date" id="ragDocDate" title="文档日期（可选，YYYY-MM-DD）">
+        <input type="text" id="ragDocVersion" placeholder="版本号（可选，如 v2.0）" maxlength="16" style="max-width:170px;">
+        <span class="hint">冲突仲裁字段（可选）：片段冲突时优先采信日期更新/版本更新的文档</span>
+      </div>
+      <div class="file-row">
+        <input type="file" id="ragFolder" webkitdirectory multiple>
+        <button id="ragBatchBtn" class="btn gray small">批量导入</button>
+        <span id="ragBatchMsg" class="hint"></span>
+      </div>
+      <div class="doc-manager">
+        <div class="doc-manager-head">
+          <b>知识库文档</b>
+          <button id="ragRefreshBtn" class="mini-btn" type="button">刷新</button>
+        </div>
+        <div id="ragDocs" class="doc-list"><span class="hint">加载中…</span></div>
+      </div>
       <div id="ragHistory" class="history"></div>
     </div>
     <div id="ragResult" class="result"></div>
@@ -346,6 +383,7 @@ tabs.forEach(function (btn) {
     var t = btn.getAttribute("data-tab");
     document.querySelectorAll(".panel").forEach(function (p) { p.classList.remove("active"); });
     $("panel-" + t).classList.add("active");
+    if (t === "rag") loadRagDocs();
   });
 });
 
@@ -360,6 +398,27 @@ function isNumericColumn(name, rows, colIdx) {
 }
 function renderSql(data) {
   var html = "";
+  if (data.clarify) {
+    sqlClarifyOrig = data.question || $("sqlQ").value.trim();
+    html += '<div class="card"><h3>需要你补充一点信息</h3>' +
+            '<div class="explain">' + esc(data.clarify) + "</div>";
+    if (data.picked_tables && data.picked_tables.length) {
+      html += '<div class="chips" style="margin-top:8px;">';
+      data.picked_tables.forEach(function (t) { html += "<span>" + esc(t) + "</span>"; });
+      html += "</div>";
+    }
+    html += '<textarea id="sqlClarifyInput" rows="2" placeholder="补充信息后点提交（Enter 发送，Shift+Enter 换行）" style="margin-top:12px;"></textarea>' +
+            '<div style="margin-top:10px;"><button id="sqlClarifyBtn" class="btn">提交补充</button></div></div>';
+    $("sqlResult").innerHTML = html;
+    var ta = $("sqlClarifyInput");
+    ta.focus();
+    ta.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askSqlClarify(); }
+    });
+    $("sqlClarifyBtn").addEventListener("click", askSqlClarify);
+    return;
+  }
+  sqlClarifyOrig = null;
   if (data.error) html += '<div class="card"><div class="error">' + esc(data.error) + "</div></div>";
   if (data.explanation) html += '<div class="card"><h3>口径说明</h3><div class="explain">' + esc(data.explanation).replace(/\n/g, "<br>") + "</div></div>";
   if (data.picked_tables && data.picked_tables.length) {
@@ -391,16 +450,29 @@ function renderSql(data) {
   }
   $("sqlResult").innerHTML = html || '<div class="card"><div class="empty">没有可展示的结果。</div></div>';
 }
-function askSql() {
-  var q = $("sqlQ").value.trim(); if (!q) { $("sqlQ").focus(); return; }
-  pushHist("sql_history", q);
-  var btn = $("sqlBtn"); btn.disabled = true; btn.textContent = "查询中…";
+var sqlClarifyOrig = null; // 待澄清的原问题（模型返回 clarify 时保存）
+function submitSql(q, clarification, isClarify) {
+  var btn = isClarify ? $("sqlClarifyBtn") : $("sqlBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "查询中…"; }
   $("sqlResult").innerHTML = loading("正在选表、生成并校验 SQL，请稍候…");
-  fetch("/ask", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": apiKey() }, body: JSON.stringify({ question: q }) })
+  var payload = { question: q };
+  if (clarification) payload.clarification = clarification;
+  fetch("/ask", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": apiKey() }, body: JSON.stringify(payload) })
     .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
     .then(renderSql)
     .catch(function (e) { $("sqlResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(e.message) + "</div></div>"; })
-    .finally(function () { btn.disabled = false; btn.textContent = "提 问"; });
+    .finally(function () { if (btn) { btn.disabled = false; btn.textContent = isClarify ? "提交补充" : "提 问"; } });
+}
+function askSql() {
+  var q = $("sqlQ").value.trim(); if (!q) { $("sqlQ").focus(); return; }
+  pushHist("sql_history", q);
+  submitSql(q, "", false);
+}
+function askSqlClarify() {
+  var reply = $("sqlClarifyInput").value.trim();
+  if (!reply) { $("sqlClarifyInput").focus(); return; }
+  if (!sqlClarifyOrig) return; // 没有待澄清原问题，忽略
+  submitSql(sqlClarifyOrig, reply, true);
 }
 
 /* ============ 面板 2：知识问答（RAG） ============ */
@@ -412,12 +484,24 @@ function renderRag(data) {
     if (data.citations && data.citations.length) {
       html += '<div class="cite"><b>引用</b>';
       data.citations.forEach(function (c) {
-        var label = typeof c === "string" ? c : (c.file || c.source || JSON.stringify(c));
+        var label;
+        if (typeof c === "string") { label = c; }
+        else {
+          label = c.file || c.source || "未知";
+          if (typeof c.page === "number") label += " · 第" + c.page + "页";
+          if (c.heading) label += " · " + c.heading;
+          if (c.doc_date) label += "（" + c.doc_date + "）";
+          else if (c.doc_version) label += "（" + c.doc_version + "）";
+        }
         html += "<span>" + esc(label) + "</span>";
       });
       html += "</div>";
     }
     html += "</div>";
+    // 裁判重试耗尽时后端返回 reflection.passed=false：展示校验警示条
+    if (data.reflection && data.reflection.passed === false) {
+      html += '<div class="card"><div class="warn">⚠️ 该回答未完全通过事实验证，请对照引用来源谨慎采信</div></div>';
+    }
   }
   $("ragResult").innerHTML = html || '<div class="card"><div class="empty">没有可展示的结果。</div></div>';
 }
@@ -432,16 +516,216 @@ function askRag() {
     .catch(function (e) { $("ragResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(e.message) + "</div></div>"; })
     .finally(function () { btn.disabled = false; btn.textContent = "提 问"; });
 }
+function resetIngestBtn() {
+  var btn = $("ragIngestBtn");
+  clearTimeout(btn._timer);
+  btn.dataset.confirmReplace = "";
+  btn.classList.remove("warn");
+  btn.disabled = false;
+  btn.textContent = "上传入库";
+}
+function doIngest(replace) {
+  var f = $("ragFile").files[0];
+  var btn = $("ragIngestBtn"), msg = $("ragIngestMsg");
+  btn.disabled = true;
+  btn.textContent = replace ? "替换中…" : "入库中…";
+  var fd = new FormData();
+  fd.append("file", f);
+  if (replace) fd.append("replace", "true");
+  var dd = $("ragDocDate") ? $("ragDocDate").value : "";
+  var dv = $("ragDocVersion") ? $("ragDocVersion").value.trim() : "";
+  if (dd) fd.append("doc_date", dd);
+  if (dv) fd.append("doc_version", dv);
+  fetch("/rag/ingest", {
+    method: "POST",
+    headers: { "X-API-Key": apiKey(), "X-User": userId() },
+    body: fd,
+  })
+    .then(function (r) {
+      if (r.status === 409 || r.status === 413 || r.status === 400) {
+        return r.json().then(function (e) { throw new Error(e.detail || ("HTTP " + r.status)); });
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function (d) {
+      msg.textContent = d.replaced
+        ? "已替换旧版（删除 " + d.replaced_chunks + " 块），新入库 " + d.chunks + " 块：" + d.filename
+        : "已入库 " + d.chunks + " 块（" + d.filename + "）";
+      $("ragFile").value = "";
+      resetIngestBtn();
+      loadRagDocs();
+    })
+    .catch(function (e) {
+      msg.textContent = "入库失败：" + e.message;
+      resetIngestBtn();
+    });
+}
+var MAX_UPLOAD_MB = 50;  // 与后端 MAX_UPLOAD_MB 保持一致
 function ingestRag() {
   var f = $("ragFile").files[0];
-  if (!f) { $("ragIngestMsg").textContent = "请先选择文件"; return; }
-  var btn = $("ragIngestBtn"); btn.disabled = true; $("ragIngestMsg").textContent = "入库中…";
-  var fd = new FormData(); fd.append("file", f);
-  fetch("/rag/ingest", { method: "POST", headers: { "X-API-Key": apiKey(), "X-User": userId() }, body: fd })
+  var btn = $("ragIngestBtn"), msg = $("ragIngestMsg");
+  if (!f) { msg.textContent = "请先选择文件"; return; }
+  if (f.size > MAX_UPLOAD_MB * 1024 * 1024) {
+    msg.textContent = "文件 " + (f.size / 1024 / 1024).toFixed(1) +
+      "MB 超过上限 " + MAX_UPLOAD_MB + "MB，请压缩或拆分后再上传";
+    resetIngestBtn();
+    return;
+  }
+
+  // 第二步：用户已在3秒内确认替换，直接执行
+  if (btn.dataset.confirmReplace === "1") { doIngest(true); return; }
+
+  // 第一步：先查重，同名则进入两步确认（避免大文件传完才报冲突）
+  btn.disabled = true; btn.textContent = "检查中…"; msg.textContent = "";
+  fetch("/rag/documents", { headers: { "X-API-Key": apiKey(), "X-User": userId() } })
     .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-    .then(function (d) { $("ragIngestMsg").textContent = "已入库 " + d.chunks + " 块（" + d.filename + "）"; })
-    .catch(function (e) { $("ragIngestMsg").textContent = "入库失败：" + e.message; })
-    .finally(function () { btn.disabled = false; });
+    .then(function (d) {
+      var exists = (d.documents || []).some(function (x) { return x.source === f.name; });
+      if (exists) {
+        btn.disabled = false;
+        btn.classList.add("warn");
+        btn.textContent = "同名已存在，确认替换？";
+        btn.dataset.confirmReplace = "1";
+        clearTimeout(btn._timer);
+        btn._timer = setTimeout(resetIngestBtn, 5000);
+      } else {
+        doIngest(false);
+      }
+    })
+    .catch(function () { doIngest(false); });  // 查重失败不阻塞，后端409兜底
+}
+
+/* ---------- 批量导入：文件夹选择 + 异步任务轮询 ---------- */
+function startBatchIngest() {
+  var input = $("ragFolder");
+  var btn = $("ragBatchBtn"), msg = $("ragBatchMsg");
+  var files = Array.prototype.slice.call(input.files || []);
+  if (!files.length) { msg.textContent = "请先选择文件夹"; return; }
+  btn.disabled = true; btn.textContent = "上传中…";
+  msg.textContent = "已选择 " + files.length + " 个文件，上传中…";
+
+  var fd = new FormData();
+  fd.append("replace", "false");
+  files.forEach(function (f) { fd.append("files", f, f.name); });
+
+  fetch("/rag/ingest/batch", {
+    method: "POST",
+    headers: { "X-API-Key": apiKey(), "X-User": userId() },
+    body: fd,
+  })
+    .then(function (r) {
+      if (r.status === 400) {
+        return r.json().then(function (e) { throw new Error(e.detail || "HTTP 400"); });
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function (d) {
+      msg.textContent = "任务已受理：" + d.total + " 份（受理 " + d.accepted +
+        "，拒收 " + d.rejected + "），后台处理中…";
+      pollBatchTask(d.task_id, msg, btn, input);
+    })
+    .catch(function (e) {
+      msg.textContent = "批量导入失败：" + e.message;
+      resetBatchBtn(btn, input);
+    });
+}
+
+function pollBatchTask(taskId, msg, btn, input) {
+  fetch("/rag/tasks/" + taskId, { headers: { "X-API-Key": apiKey(), "X-User": userId() } })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function (t) {
+      var line = "进度 " + t.done + "/" + t.total;
+      if (t.current) line += "，当前：" + t.current;
+      msg.textContent = line;
+      if (t.status !== "completed") {
+        setTimeout(function () { pollBatchTask(taskId, msg, btn, input); }, 1000);
+        return;
+      }
+      var okCount = (t.results || []).length, failCount = (t.failed || []).length;
+      var text = "批量导入完成：成功 " + okCount + " 份";
+      if (failCount) {
+        text += "，失败 " + failCount + " 份：" +
+          t.failed.map(function (x) { return x.source + "（" + x.error + "）"; }).join("；");
+      }
+      msg.textContent = text;
+      resetBatchBtn(btn, input);
+      loadRagDocs();
+    })
+    .catch(function (e) {
+      msg.textContent = "查询进度失败：" + e.message;
+      resetBatchBtn(btn, input);
+    });
+}
+
+function resetBatchBtn(btn, input) {
+  btn.disabled = false;
+  btn.textContent = "批量导入";
+  input.value = "";
+}
+
+/* ---------- 知识库文档管理：列表 / 删除 ---------- */
+function renderRagDocs(docs) {
+  var el = $("ragDocs");
+  if (!docs.length) {
+    el.innerHTML = '<span class="hint">知识库为空，上传文档后即可在此问答。</span>';
+    return;
+  }
+  el.innerHTML = docs.map(function (d) {
+    return '<div class="doc-item">' +
+             '<span class="doc-name">' + esc(d.source) + '</span>' +
+             '<span class="doc-meta">' + d.chunks + ' 块</span>' +
+             '<button class="doc-del" type="button" data-name="' + esc(d.source) + '">删除</button>' +
+           '</div>';
+  }).join("");
+  Array.prototype.forEach.call(el.querySelectorAll(".doc-del"), function (b) {
+    b.addEventListener("click", function () { deleteRagDoc(b.getAttribute("data-name"), b); });
+  });
+}
+function loadRagDocs() {
+  var el = $("ragDocs");
+  if (el) el.innerHTML = '<span class="hint">加载中…</span>';
+  fetch("/rag/documents", { headers: { "X-API-Key": apiKey(), "X-User": userId() } })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function (d) { renderRagDocs(d.documents || []); })
+    .catch(function () { if (el) el.innerHTML = '<span class="hint">文档列表加载失败</span>'; });
+}
+function resetDelBtn(btn) {
+  clearTimeout(btn._timer);
+  btn.dataset.confirm = "";
+  btn.disabled = false;
+  btn.textContent = "删除";
+}
+function deleteRagDoc(name, btn) {
+  // 第一步：页面内二次确认（不依赖 window.confirm，兼容内置预览浏览器）
+  if (btn.dataset.confirm !== "1") {
+    btn.dataset.confirm = "1";
+    btn.textContent = "确认删除？";
+    clearTimeout(btn._timer);
+    btn._timer = setTimeout(function () { resetDelBtn(btn); }, 5000);
+    return;
+  }
+  // 第二步：真正执行删除
+  clearTimeout(btn._timer);
+  btn.disabled = true; btn.textContent = "删除中…";
+  fetch("/rag/documents?source=" + encodeURIComponent(name), {
+    method: "DELETE",
+    headers: { "X-API-Key": apiKey(), "X-User": userId() },
+  })
+    .then(function (r) {
+      if (r.status === 404) { resetDelBtn(btn); loadRagDocs(); return null; }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function (d) { if (d) loadRagDocs(); })
+    .catch(function (e) {
+      resetDelBtn(btn);
+      var box = $("ragDocs");
+      if (box) box.insertAdjacentHTML("afterbegin",
+        '<div class="card" style="padding:8px 12px;margin-bottom:8px;"><span class="error" style="color:#dc2626;font-size:13px;">删除失败：' +
+        esc(e.message) + "</span></div>");
+    });
 }
 
 /* ============ 面板 3：文档转换 ============ */
@@ -450,6 +734,7 @@ function renderDoc(data) {
   if (data.status === "ok") {
     html += '<div class="card"><h3>转换成功</h3>';
     if (data.plan && data.plan.source_format) html += '<div class="meta">' + esc(data.plan.source_format) + " → " + esc(data.plan.target_format) + "</div>";
+    if (data.retry_count > 0) html += '<div class="meta">经 ' + data.retry_count + " 次重试后通过自动校验</div>";
     if (data.output_filename) html += '<a class="dl-btn" href="/doc/download/' + encodeURIComponent(data.output_filename) + '">下载结果：' + esc(data.output_filename) + "</a>";
     html += "</div>";
   } else if (data.error) {
@@ -464,14 +749,40 @@ function convertDoc() {
   var inst = $("docInstruction").value.trim();
   if (!f) { $("docResult").innerHTML = '<div class="card"><div class="error">请选择要转换的文件</div></div>'; return; }
   if (!inst) { $("docResult").innerHTML = '<div class="card"><div class="error">请输入转换指令</div></div>'; return; }
-  var btn = $("docBtn"); btn.disabled = true; btn.textContent = "转换中…";
-  $("docResult").innerHTML = loading("Agent 正在规划、转换并反思校验，请稍候…");
+  var btn = $("docBtn"); btn.disabled = true; btn.textContent = "提交中…";
+  $("docResult").innerHTML = loading("正在提交转换任务…");
   var fd = new FormData(); fd.append("file", f); fd.append("instruction", inst);
-  fetch("/doc/convert", { method: "POST", headers: { "X-API-Key": apiKey() }, body: fd })
-    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-    .then(renderDoc)
-    .catch(function (e) { $("docResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(e.message) + "</div></div>"; })
-    .finally(function () { btn.disabled = false; btn.textContent = "开始转换"; });
+  // 异步转换：提交拿 task_id → 1 秒轮询任务状态，避免大文件长时间占用连接
+  fetch("/doc/convert/async", { method: "POST", headers: { "X-API-Key": apiKey() }, body: fd })
+    .then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || ("HTTP " + r.status)); });
+      return r.json();
+    })
+    .then(function (t) {
+      $("docResult").innerHTML = loading("任务已受理（" + t.task_id + "），Agent 正在规划、转换并反思校验…");
+      pollDocTask(t.task_id, btn);
+    })
+    .catch(function (e) {
+      $("docResult").innerHTML = '<div class="card"><div class="error">提交失败：' + esc(e.message) + "</div></div>";
+      btn.disabled = false; btn.textContent = "开始转换";
+    });
+}
+function pollDocTask(taskId, btn) {
+  var timer = setInterval(function () {
+    fetch("/doc/tasks/" + taskId, { headers: { "X-API-Key": apiKey() } })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (t) {
+        if (t.status === "processing") return;   // 继续轮询
+        clearInterval(timer);
+        btn.disabled = false; btn.textContent = "开始转换";
+        renderDoc(t.result && t.result.status ? t.result : { status: "error", error: t.error || "转换失败" });
+      })
+      .catch(function (e) {
+        clearInterval(timer);
+        btn.disabled = false; btn.textContent = "开始转换";
+        $("docResult").innerHTML = '<div class="card"><div class="error">查询任务失败：' + esc(e.message) + "</div></div>";
+      });
+  }, 1000);
 }
 
 /* ---------- 健康检查（主服务 SQL） ---------- */
@@ -491,6 +802,9 @@ Array.prototype.forEach.call(document.querySelectorAll("#panel-sql .examples but
 $("ragBtn").addEventListener("click", askRag);
 $("ragQ").addEventListener("keydown", function (e) { if (e.key === "Enter") askRag(); });
 $("ragIngestBtn").addEventListener("click", ingestRag);
+$("ragBatchBtn").addEventListener("click", startBatchIngest);
+$("ragFile").addEventListener("change", resetIngestBtn);
+$("ragRefreshBtn").addEventListener("click", loadRagDocs);
 $("docBtn").addEventListener("click", convertDoc);
 $("docInstruction").addEventListener("keydown", function (e) {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); convertDoc(); }

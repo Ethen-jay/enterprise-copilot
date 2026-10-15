@@ -1,4 +1,4 @@
-﻿"""LangGraph 状态机：Planner → Converter → Reflection，支持病因分流重试。"""
+"""LangGraph 状态机：Planner → Converter → Reflection，支持病因分流重试。"""
 
 import logging
 import os
@@ -17,6 +17,7 @@ from skills.doc_agent.converters import (
     pdf_converter,
     text_converter,
 )
+from skills.doc_agent.planner import sniff_legacy_binary_format
 from skills.doc_agent.planner_v2 import TaskPlan, create_plan
 from skills.doc_agent.reflection import reflect_conversion, CAUSE_TO_ADJUSTMENT
 from skills.doc_agent.validator import validate
@@ -126,6 +127,28 @@ def converter_node(state: AgentState) -> AgentState:
     adjustment = None
     if retry_hint:
         adjustment = retry_hint.get("adjustment")
+
+    # 内容嗅探守卫（防"改名骗过识别"）：扩展名识别只看后缀，旧版 .doc/.xls 只要改名成
+    # .docx/.xlsx 就能骗过；但旧版是 OLE2 复合文档，python-docx/openpyxl 打不开，
+    # 若不拦截会抛出含内部临时路径的裸库报错（PackageNotFoundError）。此处按文件头
+    # 魔数提前识别，给出可操作的中文提示。
+    if plan.source_format in ("docx", "xlsx"):
+        try:
+            with open(src_path, "rb") as fh:
+                head = fh.read(8)
+        except OSError:
+            head = b""
+        if sniff_legacy_binary_format(head):
+            return {
+                **state,
+                "status": "error",
+                "error": (
+                    "检测到该文件是旧版 Office 二进制格式（.doc/.xls/.ppt，OLE2 复合文档），"
+                    "并非真正的新版格式——仅改扩展名不改变文件内容。"
+                    "本系统只解析新版 OOXML（.docx/.xlsx），不支持旧版二进制格式；"
+                    "请用 Word/Excel 打开后「另存为」新版格式再上传。"
+                ),
+            }
 
     try:
         output_path = _execute_conversion(src_path, plan, adjustment)

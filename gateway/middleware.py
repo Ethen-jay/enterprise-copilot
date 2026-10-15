@@ -104,6 +104,9 @@ class GatewayMiddleware:
         if not request_id:
             request_id = uuid.uuid4().hex[:12]
 
+        # 请求级状态：把 request_id 放进 scope["state"]，下游（异常处理器等）可读取回显
+        scope.setdefault("state", {})["request_id"] = request_id
+
         # 认证：未配置 GATEWAY_API_KEY 时恒放行；配置后非白名单路径须带 X-API-Key
         if _unauthorized(scope):
             await self._send_401(send, request_id, scope)
@@ -116,9 +119,11 @@ class GatewayMiddleware:
 
         start = time.perf_counter()
         status_holder = {"status": 500}
+        response_started = {"flag": False}
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
+                response_started["flag"] = True
                 status_holder["status"] = message["status"]
                 # 把 trace id 注入响应头，供前端/客户端拿到
                 headers = list(message.get("headers", []))
@@ -128,6 +133,13 @@ class GatewayMiddleware:
 
         try:
             await self.app(scope, receive, send_wrapper)
+        except Exception:
+            # 兜底：路由内未被处理的异常统一回 JSON 500（带 request_id），
+            # 避免把裸 traceback / 纯文本 500 泄漏给调用方
+            logger.exception("未处理异常 request_id=%s %s %s", request_id, method, path)
+            if response_started["flag"]:
+                raise  # 响应已开始（如 SSE 流中途出错），无法改写状态码，交给服务器断开
+            await self._send_500(send, request_id)
         finally:
             duration_ms = round((time.perf_counter() - start) * 1000, 1)
             logger.info(json.dumps({
@@ -142,7 +154,7 @@ class GatewayMiddleware:
 
     async def _send_401(self, send, request_id: str, scope: dict):
         body = json.dumps(
-            {"detail": "未认证：请携带 X-API-Key 或 Authorization: Bearer", "request_id": request_id},
+            {"code": 401, "detail": "未认证：请携带 X-API-Key 或 Authorization: Bearer", "request_id": request_id},
             ensure_ascii=False,
         ).encode("utf-8")
         await send({
@@ -167,7 +179,7 @@ class GatewayMiddleware:
 
     async def _send_429(self, send, request_id: str, scope: dict):
         body = json.dumps(
-            {"detail": "请求过于频繁，请稍后再试", "request_id": request_id},
+            {"code": 429, "detail": "请求过于频繁，请稍后再试", "request_id": request_id},
             ensure_ascii=False,
         ).encode("utf-8")
         await send({
@@ -188,3 +200,19 @@ class GatewayMiddleware:
             "status": 429,
             "rate_limited": True,
         }, ensure_ascii=False))
+
+    async def _send_500(self, send, request_id: str):
+        """兜底 500：与 401/429 同构的 JSON（code + detail + request_id）。"""
+        body = json.dumps(
+            {"code": 500, "detail": "服务器内部错误，请稍后重试", "request_id": request_id},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": 500,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"x-request-id", request_id.encode("latin-1")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})

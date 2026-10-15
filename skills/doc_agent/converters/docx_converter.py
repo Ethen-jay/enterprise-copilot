@@ -94,6 +94,39 @@ def _table_to_markdown(table: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+# 列表项行：- / * / + / 1. / 1) / 1、 开头
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.、)])\s+")
+
+
+def _normalize_lists_before_pandoc(text: str) -> str:
+    """列表块与前后正文段之间补空行（pandoc 前的规范化）。
+
+    Markdown 里列表紧跟正文段（无空行）时，pandoc 按"懒续行"把列表项
+    合并进上一段，Word 里列表会退化成一坨普通文本（段落计数也对不上）。
+    补空行让 pandoc 把列表解析为真正的列表结构：每个列表项在 docx 中
+    是独立段落（Word 编号/项目符号），与 Markdown"非空行=段落"的
+    校验口径一致。
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    prev_is_list = False
+    prev_is_blank = True  # 文件开头视为空行
+    for line in lines:
+        is_blank = not line.strip()
+        is_list = bool(_LIST_ITEM_RE.match(line))
+        is_indented = bool(line) and line[0] in (" ", "\t")  # 缩进行=列表项内容，不切断
+        # 正文段 → 列表：补空行
+        if is_list and not prev_is_blank and not prev_is_list and not is_indented:
+            out.append("")
+        # 列表 → 非缩进正文段：补空行
+        if not is_list and not is_blank and not is_indented and prev_is_list:
+            out.append("")
+        out.append(line)
+        prev_is_list = is_list
+        prev_is_blank = is_blank
+    return "\n".join(out)
+
+
 def markdown_to_docx(markdown_text: str, output_path: Optional[str] = None) -> str:
     """Markdown → DOCX（pandoc）。
 
@@ -113,7 +146,7 @@ def markdown_to_docx(markdown_text: str, output_path: Optional[str] = None) -> s
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     pypandoc.convert_text(
-        markdown_text,
+        _normalize_lists_before_pandoc(markdown_text),
         to="docx",
         format="markdown",
         outputfile=output_path,

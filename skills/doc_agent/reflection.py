@@ -1,16 +1,19 @@
-﻿"""反思引擎：转换内容校验 + RAG 蕴含裁判 + 重试病因分流。
+﻿"""反思引擎（文档转换 Agent 专用）：转换内容校验 + 重试病因分流。
+
+RAG 侧的蕴含裁判与病因表已拆分至 skills/rag_qa/reflection.py，
+两模块各自维护独立的病因表与消费方式，技能间零依赖：
+- 转换侧（本文件）：病因 → 拼 retry_prompt（纸条重写）
+- RAG 侧：病因 → 扩检索重跑 / 塞纸条重写（见 skills/rag_qa/reflection.py）
 
 核心原则：
 1. 校验器与转换器共用 content_parser 解析层（防假失败）
 2. 容差比较（15%差异内算通过）
-3. RAG 用 LLM 蕴含裁判（不只靠关键词）
-4. 重试按病因分流，不许原样重试（防空转）
+3. 重试按病因分流，不许原样重试（防空转）
 """
 
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
 
 from skills.doc_agent.content_parser import parse_metrics
 
@@ -20,14 +23,11 @@ logger = logging.getLogger("reflection")
 TOLERANCE = 0.15
 KEYWORD_KEEP_RATE = 0.75
 
-# 病因 → 调整策略映射
+# 转换侧病因 → 调整策略映射（RAG 侧病因表见 skills/rag_qa/reflection.py）
 CAUSE_TO_ADJUSTMENT = {
     "table_lost": "use_text_strategy",           # pdfplumber 用 text 策略重新提取表格
     "content_too_short": "use_text_strategy",   # 同样换 text 策略尝试提取更多
     "format_mismatch": "try_alternative_tool",   # 换工具
-    "unsupported_answer": "expand_retrieval",    # RAG 扩大检索范围
-    "hallucination": "add_no_answer_constraint", # RAG 加强约束
-    "no_citation": "add_citation_instruction",   # RAG 要求加引用
 }
 
 
@@ -192,160 +192,8 @@ def _diagnose_cause(
 
 
 # ============================================================
-# RAG LLM 蕴含裁判
+# RAG LLM 蕴含裁判（已迁移至 skills/rag_qa/reflection.py，两模块独立维护）
 # ============================================================
-
-async def llm_entailment_check(
-    question: str,
-    answer: str,
-    context_docs: list,
-) -> dict:
-    """用 LLM 判断 answer 是否被 context_docs 蕴含。
-
-    不只靠关键词重叠，用 LLM 做语义蕴含判断。
-
-    返回:
-        {
-            "passed": bool,
-            "issues": [str],
-            "cause": str | None,
-            "adjustment": str | None,
-        }
-    """
-    from skills.rag_qa.llm_client import _get_llm, build_context_blocks
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    if not answer or not answer.strip():
-        return {
-            "passed": False,
-            "issues": ["回答为空"],
-            "cause": "unsupported_answer",
-            "adjustment": CAUSE_TO_ADJUSTMENT.get("unsupported_answer"),
-        }
-
-    # 如果回答明确说无法回答，且确实没有编造，直接通过
-    if "无法回答" in answer or "根据现有文档" in answer:
-        # 检查是否同时有具体信息（矛盾）
-        if any(c.isdigit() for c in answer) and len(answer) > 30:
-            # 可能同时说无法回答又给了具体信息
-            pass
-        else:
-            return {
-                "passed": True,
-                "issues": [],
-                "cause": None,
-                "adjustment": None,
-            }
-
-    context = build_context_blocks(context_docs)
-
-    prompt = f"""请判断以下回答是否完全被参考片段支撑。
-
-【参考片段】
-{context}
-
-【用户问题】
-{question}
-
-【回答】
-{answer}
-
-请严格检查：
-1. 回答中的每个事实陈述是否都能在参考片段中找到依据？
-2. 回答中是否有参考片段中没有的信息（即编造的内容）？
-3. 回答是否与参考片段矛盾？
-
-请只输出 JSON，不要加其他文字：
-{{"supported": true/false, "unsupported_claims": ["不被支撑的具体陈述1", ...], "cause": "unsupported_answer/hallucination/no_citation/null"}}
-
-注意：
-- 如果回答明确说"无法回答"且没有编造具体信息，supported=true
-- 如果回答包含参考片段中没有的具体数字、日期、人名等，supported=false
-"""
-
-    try:
-        llm = _get_llm()
-        messages = [
-            SystemMessage(content="你是一个严谨的事实校验裁判。只输出 JSON。"),
-            HumanMessage(content=prompt),
-        ]
-        resp = await llm.ainvoke(messages)
-        raw = resp.content.strip()
-
-        # 解析 JSON（处理可能的 markdown 代码块包裹）
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        result = json.loads(raw.strip())
-
-        supported = result.get("supported", False)
-        cause = result.get("cause")
-        if not supported and not cause:
-            cause = "hallucination"
-        unsupported_claims = result.get("unsupported_claims", [])
-
-        issues = []
-        if not supported:
-            if unsupported_claims:
-                issues.append(f"回答包含不被支撑的内容: {'; '.join(unsupported_claims)}")
-            else:
-                issues.append("回答内容未被参考片段完全支撑")
-
-        adjustment = CAUSE_TO_ADJUSTMENT.get(cause) if cause else None
-
-        logger.info(
-            "RAG 蕴含裁判: supported=%s, cause=%s, issues=%s",
-            supported, cause, issues,
-        )
-
-        return {
-            "passed": supported,
-            "issues": issues,
-            "cause": cause if not supported else None,
-            "adjustment": adjustment,
-        }
-    except Exception as e:
-        logger.warning("LLM 蕴含裁判失败，降级为关键词校验: %s", e)
-        # 降级：关键词重叠校验
-        return _keyword_fallback_check(question, answer, context_docs)
-
-
-def _keyword_fallback_check(
-    question: str,
-    answer: str,
-    context_docs: list,
-) -> dict:
-    """LLM 裁判失败时的降级：关键词重叠校验。"""
-    from skills.doc_agent.content_parser import extract_keywords
-
-    context_text = " ".join(doc.page_content for doc in context_docs)
-    ctx_kw = set(extract_keywords(context_text, top_n=20))
-    ans_kw = set(extract_keywords(answer, top_n=10))
-
-    if not ctx_kw:
-        return {
-            "passed": False,
-            "issues": ["参考片段为空，无法校验"],
-            "cause": "unsupported_answer",
-            "adjustment": CAUSE_TO_ADJUSTMENT.get("unsupported_answer"),
-        }
-
-    overlap = ans_kw & ctx_kw
-    if ans_kw and len(overlap) / len(ans_kw) < 0.3:
-        return {
-            "passed": False,
-            "issues": [f"回答关键词与参考片段重叠率过低: {len(overlap)}/{len(ans_kw)}"],
-            "cause": "hallucination",
-            "adjustment": CAUSE_TO_ADJUSTMENT.get("hallucination"),
-        }
-
-    return {
-        "passed": True,
-        "issues": [],
-        "cause": None,
-        "adjustment": None,
-    }
 
 
 # ============================================================
