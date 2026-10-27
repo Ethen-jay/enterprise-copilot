@@ -98,19 +98,54 @@ def _extract_pages(doc, progress_callback: Optional[Callable[[str], None]]) -> L
     pages_text: list[str] = []
     total = len(doc)
     for i, page in enumerate(doc):
-        text = page.get_text()
-        if (
-            ENABLE_OCR
-            and len(text.strip()) < OCR_MIN_CHARS
-            and page.get_images()  # 纯空白页（无图）不跑 OCR
-        ):
-            cb(f"ocr:{i + 1}/{total}")
-            ocr_text = _ocr_page(page)
-            # OCR 识别出更多字符才采纳，避免低文字页误触发 OCR 反而丢内容
-            if len(ocr_text.strip()) > len(text.strip()):
-                text = ocr_text
-        pages_text.append(text)
+        pages_text.append(_extract_page_text(page, i, total, cb))
     return pages_text
+
+
+def _extract_page_text(page, i: int, total: int, cb: Callable[[str], None]) -> str:
+    """抽取单页文本：有文本层直读；低文字且含图（扫描页）走 RapidOCR 兜底。
+
+    OCR 结果字符数更多才采纳，避免低文字页误触发 OCR 反而丢内容。
+    """
+    text = page.get_text()
+    if (
+        ENABLE_OCR
+        and len(text.strip()) < OCR_MIN_CHARS
+        and page.get_images()  # 纯空白页（无图）不跑 OCR
+    ):
+        cb(f"ocr:{i + 1}/{total}")
+        ocr_text = _ocr_page(page)
+        if len(ocr_text.strip()) > len(text.strip()):
+            text = ocr_text
+    return text
+
+
+def iter_pdf_page_batches(
+    path: str,
+    batch_size: int,
+    progress_callback: Optional[Callable[[str], None]] = None,
+):
+    """按页流水线生成器：每次 yield 一批页文本，处理完即释放（不持有整本）。
+
+    大文件层3：内存峰值从"整本文档全部页文本"降到"一批 batch_size 页"。
+    页码/OCR 逻辑与 _extract_pages 完全一致（复用 _extract_page_text），
+    扫描页 OCR 逐批进行，进度回调照旧推送 ocr:{页}/{总页数}。
+
+    yield: (本批页文本列表, 本批首页页码（1 起）)
+    """
+    cb = progress_callback or (lambda _: None)
+    with pymupdf.open(path) as doc:
+        total = len(doc)
+        batch: list[str] = []
+        first_page = 1
+        for i, page in enumerate(doc):
+            batch.append(_extract_page_text(page, i, total, cb))
+            if len(batch) >= batch_size:
+                yield batch, first_page
+                first_page = i + 2  # 下一批首页 = 当前页码 + 1（i 是 0 起下标）
+                batch = []
+        if batch:  # 不足一批的尾部
+            yield batch, first_page
 
 
 # RapidOCR 引擎懒加载单例（模型加载慢，进程内只初始化一次）
@@ -317,4 +352,26 @@ def locate_headings(chunks: list[str], text: str, headings: list[tuple[int, str]
         idx = bisect.bisect_right(offsets, pos) - 1
         result.append(titles[idx] if idx >= 0 else "")
         cursor = max(pos + 1, cursor + 1)
+    return result
+
+
+def locate_headings_from_positions(
+    positions: list[int], headings: list[tuple[int, str]]
+) -> list[str]:
+    """按精确起始字符位置定位标题（按偏移二分），供按页流水线分块定位章节。
+
+    与 locate_pages_from_positions 同构：标题偏移为全局坐标（批间累计），
+    无需在全文中 find 游标推进。标题列表为空时全部返回空字符串。
+    """
+    import bisect
+
+    if not headings:
+        return ["" for _ in positions]
+
+    offsets = [h[0] for h in headings]
+    titles = [h[1] for h in headings]
+    result: list[str] = []
+    for pos in positions:
+        idx = bisect.bisect_right(offsets, pos) - 1
+        result.append(titles[idx] if idx >= 0 else "")
     return result

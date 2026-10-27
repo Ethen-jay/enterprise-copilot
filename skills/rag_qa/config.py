@@ -64,6 +64,16 @@ API_MAX_RETRIES = int(_get("API_MAX_RETRIES", "3"))
 API_RETRY_BASE_DELAY = float(_get("API_RETRY_BASE_DELAY", "1.0"))
 API_RETRY_MAX_DELAY = float(_get("API_RETRY_MAX_DELAY", "30.0"))
 
+# ===== 大文件处理（四层防线） =====
+# 层2 异步阈值：单文件超过该大小走 /ingest/async（受理即返回 task_id，前端轮询进度）
+ASYNC_THRESHOLD_MB = float(_get("ASYNC_THRESHOLD_MB", "10"))
+# 层4 低优先级阈值：超过该大小的文件（典型为扫描版 PDF）进低优先级队列，
+# 普通任务优先执行，空闲时才处理低优先级（受理时以文件大小为代理，此时无法预知是否扫描件）
+LOW_PRIORITY_MB = float(_get("LOW_PRIORITY_MB", "20"))
+# 层3 按页流水线：PDF 每批解析/分块/嵌入/入库的页数，
+# 内存峰值从整本文档文本降到一批页的文本（批间保留 2×PARENT_CHUNK_SIZE 缓冲防切断父块）
+PDF_PAGE_BATCH = int(_get("PDF_PAGE_BATCH", "50"))
+
 # ===== 向量空间与归一化 =====
 # bge 官方推荐 cosine + 向量归一化：embedding 出口统一 L2 归一化（幂等），
 # 归一化后 L2 与 cosine 排序等价；建 collection 时指定 hnsw:space。

@@ -112,6 +112,7 @@ class VectorStore:
         pages: Optional[List[int]] = None,
         headings: Optional[List[str]] = None,
         doc_meta: Optional[dict] = None,
+        child_start: int = 0,
     ) -> int:
         """高性能入库（单层分块模式）：预计算 embedding → 直接写入 collection。
 
@@ -123,6 +124,8 @@ class VectorStore:
             headings: 与 chunks 等长的章节标题列表；提供时写入 metadata.heading，
                       便于检索结果溯源到文档章节。
             doc_meta: 文档级仲裁字段（doc_date/doc_version/ingested_at，见 build_doc_meta）。
+            child_start: 本批 chunk 的全局起始序号（按页流水线分批写入时累计偏移，
+                         保证 ID/chunk_index 全文档唯一不冲突；单次全量写入保持默认 0）。
         """
         if not chunks:
             return 0
@@ -135,9 +138,9 @@ class VectorStore:
         # 2. 直接写入 Chroma collection
         if progress_callback:
             progress_callback("storing")
-        ids = [f"{source}#{i}" for i in range(len(chunks))]
+        ids = [f"{source}#{child_start + i}" for i in range(len(chunks))]
         metadatas = [
-            _build_metadata(source, i, pages, headings, doc_meta)
+            _build_metadata(source, child_start + i, pages, headings, doc_meta, local_index=i)
             for i in range(len(chunks))
         ]
 
@@ -159,6 +162,8 @@ class VectorStore:
         headings: Optional[List[str]] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
         doc_meta: Optional[dict] = None,
+        child_start: int = 0,
+        parent_start: int = 0,
     ) -> int:
         """Small-to-Big 父子双层入库。
 
@@ -170,10 +175,12 @@ class VectorStore:
             parent_chunks: [(父块文本, 父块起始位置), ...]（引擎层已切好）。
             child_records: [(小块文本, 小块全局起始位置, parent_id), ...]。
             source: 来源文件名。
-            pages: 每个小块所在 PDF 页码（可选）。
-            headings: 每个小块所属章节标题（可选）。
+            pages: 本批每个小块所在 PDF 页码（可选，与 child_records 等长局部索引）。
+            headings: 本批每个小块所属章节标题（可选，与 child_records 等长局部索引）。
             progress_callback: 进度回调函数。
             doc_meta: 文档级仲裁字段（doc_date/doc_version/ingested_at，见 build_doc_meta）。
+            child_start: 本批小块的全局起始序号（分批写入累计偏移，保 ID/chunk_index 唯一）。
+            parent_start: 本批父块的全局起始序号（parent_id 全文档唯一不冲突）。
 
         返回:
             入库的小块数。
@@ -193,24 +200,25 @@ class VectorStore:
         for i, (_, _, parent_id) in enumerate(child_records):
             meta = {
                 "source": source,
-                "chunk_index": i,
+                "chunk_index": child_start + i,  # 全局序号（引用溯源用）
                 "chunk_type": "child",
                 "parent_id": parent_id,
             }
+            # pages/headings 为本批局部索引（与 child_records 等长），不能用全局序号索引
             if pages is not None and i < len(pages) and pages[i]:
                 meta["page"] = int(pages[i])
             if headings is not None and i < len(headings) and headings[i]:
                 meta["heading"] = headings[i]
             meta.update(doc_meta)  # 仲裁字段（doc_date/doc_version/ingested_at）
             child_metas.append(meta)
-        child_ids = [f"{source}#c{i}" for i in range(len(child_records))]
+        child_ids = [f"{source}#c{child_start + i}" for i in range(len(child_records))]
 
         # 2. 父块：零向量（维度取自小块向量），不参与向量检索
         dim = len(vectors[0])
-        parent_ids = [parent_id_for(source, i) for i in range(len(parent_chunks))]
+        parent_ids = [parent_id_for(source, parent_start + i) for i in range(len(parent_chunks))]
         parent_metas = []
         for i in range(len(parent_chunks)):
-            meta = {"source": source, "chunk_type": "parent", "parent_index": i}
+            meta = {"source": source, "chunk_type": "parent", "parent_index": parent_start + i}
             meta.update(doc_meta)  # 父块也带仲裁字段：LLM 上下文用父块，仲裁依据必须存在这层
             parent_metas.append(meta)
         parent_texts = [p[0] for p in parent_chunks]
@@ -345,14 +353,19 @@ def _build_metadata(
     pages: Optional[List[int]],
     headings: Optional[List[str]] = None,
     doc_meta: Optional[dict] = None,
+    local_index: Optional[int] = None,
 ) -> dict:
     """构造 chunk metadata：source + chunk_index，PDF 分块额外存 page 页码，
-    headings 存章节标题，doc_meta 为文档级仲裁字段（doc_date/doc_version/ingested_at）。"""
+    headings 存章节标题，doc_meta 为文档级仲裁字段（doc_date/doc_version/ingested_at）。
+
+    local_index: pages/headings 的本批局部索引（分批写入时与全局 chunk_index 不同，
+                 单次全量写入不传，退化为 chunk_index）。"""
+    idx = local_index if local_index is not None else chunk_index
     meta = {"source": source, "chunk_index": chunk_index}
-    if pages is not None and chunk_index < len(pages) and pages[chunk_index]:
-        meta["page"] = int(pages[chunk_index])
-    if headings is not None and chunk_index < len(headings) and headings[chunk_index]:
-        meta["heading"] = headings[chunk_index]
+    if pages is not None and idx < len(pages) and pages[idx]:
+        meta["page"] = int(pages[idx])
+    if headings is not None and idx < len(headings) and headings[idx]:
+        meta["heading"] = headings[idx]
     if doc_meta:
         meta.update(doc_meta)
     return meta

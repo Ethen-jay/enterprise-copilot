@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from skills.rag_qa import rag_engine
+from skills.rag_qa.config import ASYNC_THRESHOLD_MB, LOW_PRIORITY_MB
 from skills.rag_qa.vector_store import normalize_user
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -47,6 +48,11 @@ def _validate_arbiter_fields(doc_date: Optional[str], doc_version: Optional[str]
             status_code=400,
             detail="doc_version 格式非法：仅允许字母/数字/点/下划线/连字符，1-16 位",
         )
+
+
+def _sse(event: str, data) -> str:
+    """统一 SSE 帧格式：event 名 + 单行 JSON data + 空行结尾。"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 # ----------------------------------------------------------------------
@@ -165,7 +171,8 @@ async def ingest(
 
     replace=True 时为同名替换：先删除该文件的全部旧向量块，再入新块。
     未显式替换且同名文档已存在时返回 409，防止旧块残留或误覆盖。
-    doc_date/doc_version 为可选冲突仲裁字段：片段冲突时优先采信日期更新/版本更新的文档。
+    doc_date/doc_version 为可选冲突仲裁字段：**版本冲突**（同一事物的不同版本）时优先采信日期/版本
+    更新的一方；**口径冲突**（不同来源各自有效）时不据此裁决，仅用于引用中标注来源。
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名为空")
@@ -233,7 +240,7 @@ async def ingest_stream(
     """SSE 流式入库：实时推送解析/分块/embedding/存储/OCR 进度。
 
     同名已存在且未确认 replace=true 时返回 409（建流前拦截）；
-    doc_date/doc_version 为可选冲突仲裁字段（片段冲突时新者胜）。
+    doc_date/doc_version 为可选冲突仲裁字段（版本冲突时新者胜；口径冲突时不据此裁决仅标注来源）。
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名为空")
@@ -299,9 +306,73 @@ async def ingest_stream(
 
 
 # ----------------------------------------------------------------------
-# 批量异步导入：任务队列 + 进度查询（PoC 级内存任务表，单进程串行处理）
+# 入库任务调度：优先级队列 + 单 worker 串行（PoC 级内存任务表，重启即清空）
+#
+# 大文件四层防线中的层2/层4：
+# - 层2 异步任务：大文件受理即返回 task_id（/ingest/async），前端轮询 /tasks/{id}
+#   或订阅 SSE /tasks/{id}/events（复用 event-stream 形态）
+# - 层4 低优先级队列：大文件（典型为扫描版 PDF）入低优先级，
+#   普通任务优先执行，worker 空闲时才处理低优先级
+#
+# 单 worker 串行的额外收益：批量/单文件任务全部排队串行执行，
+# 消除多任务并发写同一 Chroma 目录导致索引损坏的风险。
 # ----------------------------------------------------------------------
-TASKS: dict[str, dict] = {}  # task_id -> 任务状态快照（与网关限流同为内存级，重启即清空）
+TASKS: dict[str, dict] = {}  # task_id -> 任务状态快照
+
+import heapq  # noqa: E402  (就近放置，便于阅读调度器)
+
+_PENDING: list[tuple[int, int, str]] = []  # 堆：[(priority, seq, coro_name)]
+_JOBS: dict[int, object] = {}              # seq -> 待执行协程工厂
+_WAKE: Optional[asyncio.Event] = None      # 延迟创建（需运行中的事件循环）
+_JOB_SEQ = 0
+_WORKER: Optional[asyncio.Task] = None
+
+
+def _submit_job(priority: int, coro_factory) -> None:
+    """入队一个入库任务：priority 0=普通 / 1=低优先级（小者先执行，同优先级 FIFO）。"""
+    global _JOB_SEQ
+    heapq.heappush(_PENDING, (priority, _JOB_SEQ, getattr(coro_factory, "__name__", "job")))
+    _JOBS[_JOB_SEQ] = coro_factory
+    _JOB_SEQ += 1
+    _ensure_worker()
+    if _WAKE is not None:
+        _WAKE.set()
+
+
+def _ensure_worker() -> None:
+    """懒启动 worker 协程（首次入队时启动，随主事件循环存活）。
+
+    asyncio.Event 延迟到此处创建：模块导入时无运行中的事件循环，
+    旧版 Python 在无 loop 时创建 Event 会绑定错误的 loop。
+    """
+    global _WORKER, _WAKE
+    if _WAKE is None:
+        _WAKE = asyncio.Event()
+    if _WORKER is None or _WORKER.done():
+        _WAKE.set()  # 兜底唤醒（worker 重启时队列里可能有残留任务）
+        _WORKER = asyncio.create_task(_queue_worker())
+
+
+async def _queue_worker() -> None:
+    """入库队列 worker：按优先级串行执行任务（普通 → 低优先级）。
+
+    heap 取最小 (priority, seq)：低优先级任务排队期间，后来的普通任务
+    插队先执行；正在执行的任务不被抢占（Chroma 写入不可并发打断）。
+    """
+    while True:
+        while _PENDING:
+            _, seq, name = heapq.heappop(_PENDING)
+            factory = _JOBS.pop(seq, None)
+            if factory is None:
+                continue
+            logger.info("入库任务开始: %s (队列剩余 %d)", name, len(_PENDING))
+            try:
+                await factory()
+            except Exception:
+                logger.exception("入库任务执行失败: %s", name)
+        _WAKE.clear()
+        if not _PENDING:  # double-check：clear 后若又有入队（Event 已被 set 过），继续处理
+            await _WAKE.wait()
 
 
 class BatchIngestResponse(BaseModel):
@@ -317,12 +388,156 @@ class TaskStatusResponse(BaseModel):
     total: int
     done: int
     current: Optional[str]     # 正在处理的文件名
+    stage: Optional[str] = None       # 单文件任务的细粒度阶段（parsing/ocr:x/y/pages/chunks/done…）
+    priority: Optional[str] = None    # normal | low
     results: list[dict]        # [{source, chunks}]
     failed: list[dict]         # [{source, error}]
 
 
+class AsyncIngestResponse(BaseModel):
+    """单文件异步入库受理结果（层2）：上传受理即返回，前端轮询进度。"""
+    task_id: str
+    filename: str
+    size_mb: float
+    priority: str              # normal | low（层4：≥ LOW_PRIORITY_MB 走低优先级）
+    pipeline: str              # stream=按页流水线（PDF 大文件）/ full=全量管线
+    status: str = "queued"
+
+
+def _is_low_priority(size_bytes: int) -> bool:
+    """层4 判定：文件大小 ≥ LOW_PRIORITY_MB 进低优先级队列。
+
+    受理时以文件大小为代理（此时无法预知是否扫描件）——扫描版 PDF
+    通常文件体积大，阈值可在 .env 调整。
+    """
+    return size_bytes >= LOW_PRIORITY_MB * 1024 * 1024
+
+
+def _use_stream_pipeline(size_bytes: int, filename: str) -> bool:
+    """层3 判定：PDF 且大小 ≥ ASYNC_THRESHOLD_MB 走按页流水线（内存峰值降一批页）。"""
+    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return ext == ".pdf" and size_bytes >= ASYNC_THRESHOLD_MB * 1024 * 1024
+
+
+async def _run_single_task(
+    task_id: str,
+    tmp_path: Path,
+    filename: str,
+    user: str,
+    replace: bool,
+    doc_date: Optional[str],
+    doc_version: Optional[str],
+    use_stream: bool,
+):
+    """后台执行单个大文件入库（在线程池跑阻塞管线，stage 实时写入任务快照）。"""
+    info = TASKS.get(task_id) or {}
+    info["stage"] = "starting"
+
+    def cb(msg: str) -> None:
+        info["stage"] = msg
+
+    try:
+        fn = rag_engine.ingest_path_stream if use_stream else rag_engine.ingest_path
+        result = await asyncio.to_thread(
+            fn, str(tmp_path), filename, cb, user, replace, doc_date, doc_version,
+        )
+        info["results"].append({"source": filename, "chunks": result["chunks"]})
+        info["stage"] = "done"
+        logger.info(
+            "异步入库完成: task=%s, user=%s, %s, %d 块, 管线=%s",
+            task_id, user, filename, result["chunks"], "stream" if use_stream else "full",
+        )
+    except Exception as e:
+        logger.exception("异步入库失败: task=%s, %s", task_id, filename)
+        info["failed"].append({"source": filename, "error": str(e)})
+        info["stage"] = "error"
+    finally:
+        info["status"] = "completed"
+        info["done"] = 1
+        info["current"] = None
+        tmp_path.unlink(missing_ok=True)
+
+
+@router.post("/ingest/async", response_model=AsyncIngestResponse)
+async def ingest_async(
+    file: UploadFile = File(...),
+    replace: bool = Form(False),
+    doc_date: Optional[str] = Form(None),
+    doc_version: Optional[str] = Form(None),
+    x_user: Optional[str] = Header(None),
+):
+    """大文件异步入库（层2）：校验落盘后立即返回 task_id，后台排队处理。
+
+    - 层4：文件 ≥ LOW_PRIORITY_MB 进低优先级队列（普通任务优先）
+    - 层3：PDF ≥ ASYNC_THRESHOLD_MB 走按页流水线（内存峰值降一批页）
+    - 进度：轮询 GET /tasks/{task_id} 或订阅 SSE GET /tasks/{task_id}/events
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="文件名为空")
+
+    _validate_ext(file.filename)
+    user = _resolve_user(x_user)
+    _validate_arbiter_fields(doc_date, doc_version)
+
+    if not replace and rag_engine.get_store(user).has_document(file.filename):
+        raise HTTPException(
+            status_code=409,
+            detail=f"同名文档已存在: {file.filename}，请使用替换上传(replace=true)",
+        )
+
+    try:
+        tmp_path = await _save_upload_to_disk(file, UPLOAD_TMP_DIR)
+    except FileTooLargeError as e:
+        limit_mb = e.args[0] / 1024 / 1024
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件超过大小上限 {limit_mb:.0f}MB，请压缩或拆分后再上传",
+        )
+
+    size_bytes = tmp_path.stat().st_size
+    priority = "low" if _is_low_priority(size_bytes) else "normal"
+    use_stream = _use_stream_pipeline(size_bytes, file.filename)
+
+    task_id = uuid.uuid4().hex[:12]
+    TASKS[task_id] = {
+        "status": "processing",
+        "total": 1,
+        "done": 0,
+        "current": file.filename,
+        "stage": "queued",
+        "priority": priority,
+        "results": [],
+        "failed": [],
+    }
+
+    async def _job() -> None:
+        await _run_single_task(
+            task_id, tmp_path, file.filename, user, replace,
+            doc_date, doc_version, use_stream,
+        )
+
+    _job.__name__ = f"single:{file.filename}"
+    _submit_job(1 if priority == "low" else 0, _job)
+
+    logger.info(
+        "异步入库受理: task=%s, user=%s, %s, %.1fMB, 优先级=%s, 管线=%s",
+        task_id, user, file.filename, size_bytes / 1024 / 1024, priority,
+        "stream" if use_stream else "full",
+    )
+    return AsyncIngestResponse(
+        task_id=task_id,
+        filename=file.filename,
+        size_mb=round(size_bytes / 1024 / 1024, 2),
+        priority=priority,
+        pipeline="stream" if use_stream else "full",
+    )
+
+
 async def _process_batch_task(task_id: str, user: str, replace: bool, items: list[tuple[Path, str]]):
-    """后台工作协程：逐份解析入库（串行，尊重 Chroma 写锁），实时更新任务状态。"""
+    """后台工作协程：逐份解析入库（串行，尊重 Chroma 写锁），实时更新任务状态。
+
+    批内大文件（≥ ASYNC_THRESHOLD_MB 的 PDF）自动切换按页流水线（层3）。
+    """
     info = TASKS[task_id]
     try:
         for tmp_path, source in items:
@@ -332,9 +547,12 @@ async def _process_batch_task(task_id: str, user: str, replace: bool, items: lis
                 if not replace and rag_engine.get_store(user).has_document(source):
                     raise ValueError("同名文档已存在（可用替换模式重传）")
 
-                # 阻塞型解析/embedding 放线程池，避免卡住进度查询接口
+                # 阻塞型解析/embedding 放线程池，避免卡住进度查询接口；
+                # 大文件 PDF 走按页流水线（内存峰值从整本降到一批页）
+                use_stream = _use_stream_pipeline(tmp_path.stat().st_size, source)
+                fn = rag_engine.ingest_path_stream if use_stream else rag_engine.ingest_path
                 result = await asyncio.to_thread(
-                    rag_engine.ingest_path, str(tmp_path), source, None, user, replace,
+                    fn, str(tmp_path), source, None, user, replace,
                 )
                 info["results"].append({"source": source, "chunks": result["chunks"]})
             except Exception as e:
@@ -402,14 +620,25 @@ async def ingest_batch(
     }
 
     if accepted:
-        asyncio.create_task(_process_batch_task(task_id, user, replace, accepted))
+        # 入队调度（层4）：批量任务按总大小定优先级，与单文件任务统一串行执行，
+        # 消除并发写 Chroma 的索引损坏风险
+        total_bytes = sum(p.stat().st_size for p, _ in accepted)
+        batch_priority = 1 if _is_low_priority(total_bytes) else 0
+
+        async def _job() -> None:
+            await _process_batch_task(task_id, user, replace, accepted)
+
+        _job.__name__ = f"batch:{len(accepted)}files"
+        _submit_job(batch_priority, _job)
+        priority_label = "low" if batch_priority else "normal"
     else:
         TASKS[task_id]["status"] = "completed"
         shutil.rmtree(task_dir, ignore_errors=True)
+        priority_label = "-"
 
     logger.info(
-        "批量导入受理: task=%s, user=%s, 共%d份, 受理%d, 拒收%d",
-        task_id, user, len(files), len(accepted), len(rejected),
+        "批量导入受理: task=%s, user=%s, 共%d份, 受理%d, 拒收%d, 优先级=%s",
+        task_id, user, len(files), len(accepted), len(rejected), priority_label,
     )
     return BatchIngestResponse(task_id=task_id, total=len(files),
                                accepted=len(accepted), rejected=len(rejected))
@@ -417,7 +646,7 @@ async def ingest_batch(
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 def get_task_status(task_id: str):
-    """查询批量导入任务进度（前端轮询）。"""
+    """查询入库任务进度（前端轮询；单文件任务含细粒度 stage）。"""
     info = TASKS.get(task_id)
     if not info:
         raise HTTPException(status_code=404, detail="任务不存在或已过期（任务表在内存中，服务重启即清空）")
@@ -427,9 +656,46 @@ def get_task_status(task_id: str):
         total=info["total"],
         done=info["done"],
         current=info["current"],
+        stage=info.get("stage"),
+        priority=info.get("priority"),
         results=info["results"],
         failed=info["failed"],
     )
+
+
+@router.get("/tasks/{task_id}/events")
+async def task_events(task_id: str):
+    """入库任务 SSE 进度流（层2 的进度通道，复用 event-stream 形态）。
+
+    事件：stage（阶段变化，含 status/done/total 快照）→ final（完成，含结果）。
+    与 /ingest/stream 同为 SSE；轮询 /tasks/{task_id} 与本端点二选一。
+    """
+    info = TASKS.get(task_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期（任务表在内存中，服务重启即清空）")
+
+    async def event_generator():
+        last_stage = object()  # 哨兵：保证首帧必发
+        while True:
+            stage = info.get("stage") or info.get("current") or "processing"
+            if stage != last_stage:
+                last_stage = stage
+                yield _sse("stage", {
+                    "stage": stage,
+                    "status": info["status"],
+                    "done": info["done"],
+                    "total": info["total"],
+                })
+            if info["status"] == "completed":
+                yield _sse("final", {
+                    "results": info["results"],
+                    "failed": info["failed"],
+                    "stage": info.get("stage"),
+                })
+                return
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 class DocumentItem(BaseModel):
@@ -498,6 +764,75 @@ async def chat(req: ChatRequest, x_user: Optional[str] = Header(None)):
     except Exception as e:
         logger.exception("问答失败")
         raise HTTPException(status_code=500, detail=f"问答失败: {e}")
+
+
+@router.post("/chat/stream")
+async def chat_stream(req: ChatRequest, x_user: Optional[str] = Header(None)):
+    """问答 SSE 状态进度流：检索中 → 重排中 → 生成中，最后 final 返回完整 ChatResponse。
+
+    与 /ingest/stream 同为 event-stream 形态；/chat 的 JSON 行为保持不变。
+    """
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="问题不能为空")
+
+    user = _resolve_user(x_user)
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def progress_cb(evt: dict) -> None:
+        queue.put_nowait(evt)
+
+    async def event_generator():
+        # 先推首条状态再启动任务：检索是同步阻塞调用，先让用户看到"正在检索"
+        last = {"stage": "retrieving", "message": "正在检索知识库…"}
+        yield _sse("status", last)
+
+        task = asyncio.create_task(
+            rag_engine.chat(req.question, history=req.history, user=user, progress_cb=progress_cb)
+        )
+        getter: Optional[asyncio.Task] = None
+        try:
+            # 状态一到就推送，不依赖固定间隔轮询（避免瞬时状态被覆盖丢失）
+            while True:
+                getter = asyncio.create_task(queue.get())
+                done, _ = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    evt = getter.result()
+                    if evt != last:
+                        last = evt
+                        yield _sse("status", evt)
+                else:
+                    getter.cancel()
+                if task in done:
+                    break
+
+            await asyncio.sleep(0)  # 让已入队的状态先刷出
+            while not queue.empty():
+                evt = queue.get_nowait()
+                if evt != last:
+                    last = evt
+                    yield _sse("status", evt)
+
+            try:
+                result = task.result()
+            except ValueError as e:
+                yield _sse("error", {"stage": "error", "error": str(e)})
+            except Exception as e:
+                logger.exception("问答失败")
+                yield _sse("error", {"stage": "error", "error": f"问答失败: {e}"})
+            else:
+                payload = ChatResponse(
+                    answer=result["answer"],
+                    citations=result["citations"],
+                    reflection=result.get("reflection", {}),
+                )
+                yield _sse("final", payload.model_dump())
+        finally:
+            if getter is not None and not getter.done():
+                getter.cancel()
+            if not task.done():
+                task.cancel()  # 客户端断开时停止后续流程
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ---- 独立启动形态（F1 保底，端口 8001）----

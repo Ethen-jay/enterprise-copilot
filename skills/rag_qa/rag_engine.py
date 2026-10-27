@@ -4,11 +4,15 @@
 → 拼 Prompt（含冲突仲裁标注）→ LLM → 蕴含裁判反思（混合重试：扩检索 / 塞纸条重写）。
 """
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Callable, List, Optional
 
 from skills.rag_qa.config import (
+    CHUNK_SIZE,
+    PDF_PAGE_BATCH,
+    PARENT_CHUNK_SIZE,
     RELEVANCE_THRESHOLD,
     RETRIEVE_CANDIDATES,
     TOP_K,
@@ -246,6 +250,167 @@ def ingest_path(
     )
 
 
+def ingest_path_stream(
+    path: str,
+    filename: str,
+    progress_callback: Optional[Callable[[str], None]] = None,
+    user: str = DEFAULT_USER,
+    replace: bool = False,
+    doc_date: Optional[str] = None,
+    doc_version: Optional[str] = None,
+) -> dict:
+    """入库流程（按页流水线，大文件层3）：PDF 每批 PDF_PAGE_BATCH 页
+    解析 → 分块 → 嵌入 → 入库，处理完一批即释放，内存峰值从
+    "整本文档全部页文本"降到"一批页 + 尾部缓冲"。
+
+    批间保留 2×父块(或块)长度的 carry-over 缓冲：splitter 顺序贪心切分，
+    前缀块边界只依赖边界之前的内容，缓冲足够大时安全区（cutoff 之前）切出的
+    块与全量切分一致；仅批边界附近可能有细微差别（检索单元是 200 字小块，
+    影响可忽略）。页起点/标题偏移全部累计为全局坐标，页码与章节定位不受影响。
+
+    失败回滚：任一批异常时删除已写入的块（delete_document），不留半份文档。
+    非 PDF 文本文件无页概念，退回全量管线 ingest_path。
+
+    参数同 ingest_path。
+    """
+    ext = Path(filename).suffix.lower()
+    if ext != ".pdf":
+        return ingest_path(path, filename, progress_callback, user,
+                           replace, doc_date, doc_version)
+
+    cb = progress_callback or (lambda _: None)
+    store = get_store(user)
+    doc_meta = build_doc_meta(doc_date=doc_date, doc_version=doc_version)
+
+    # 同名替换：先删旧块（与全量管线一致，中途失败旧块同样不可恢复）
+    if replace:
+        removed = store.delete_document(filename)
+        if removed:
+            cb(f"replacing:{removed}")
+            logger.info("替换入库(流水线): 用户=%s, %s, 删除旧块 %d 个", user, filename, removed)
+
+    # 切分粒度：父子模式按父块保留缓冲，单层模式按 CHUNK_SIZE
+    unit = PARENT_CHUNK_SIZE if USE_PARENT_CHILD else CHUNK_SIZE
+    keep_tail = 2 * unit  # carry-over 缓冲（防批边界切断块）
+
+    buffer = ""                          # 未切分文本（含保留区）
+    buffer_start = 0                     # buffer 首字符的全局偏移
+    page_starts: list[int] = []          # 累计：每页起点（全局坐标）
+    headings_global: list[tuple[int, str]] = []  # 累计：标题 (全局偏移, 标题)
+    seen_headings: set[int] = set()
+    child_seq = 0                        # 小块全局序号（分批写入不撞 ID）
+    parent_seq = 0                       # 父块全局序号
+    total_children = 0
+
+    def _absorb(batch: list[str], first_page: int, final: bool) -> None:
+        """吸收一批页文本：拼接 → 累计页起点 → 提取标题 → 安全区切块 → 入库 → 消费缓冲。"""
+        nonlocal buffer, buffer_start, child_seq, parent_seq, total_children
+
+        # 1. 拼接进缓冲（每页尾部带一个换行，页间恰为单换行——与 build_page_text
+        #    规则一致；尾部多出的最后一个换行被 splitter 忽略，无影响），
+        #    同步累计页起点（全局坐标）
+        if batch:
+            cb(f"pages:{first_page}-{first_page + len(batch) - 1}")
+            for page in batch:
+                page_starts.append(buffer_start + len(buffer))
+                buffer += page + "\n"
+
+        # 2. 提取标题（对整个 buffer，保留安全区内且未见过的，偏移转全局）
+        cutoff = len(buffer) if final else len(buffer) - keep_tail
+        for off, title in document_loader.extract_headings(buffer):
+            if off < cutoff:
+                goff = buffer_start + off
+                if goff not in seen_headings:
+                    headings_global.append((goff, title))
+                    seen_headings.add(goff)
+
+        # 3. 安全区切块：只保留起点在 cutoff 之前的块（保留区留给下一批重切）
+        if USE_PARENT_CHILD:
+            all_parents = text_splitter.split_parent_chunks(buffer)
+            kept = [(t, s) for t, s in all_parents if s < cutoff] if not final else all_parents
+        else:
+            all_chunks = text_splitter.split_text_with_positions(buffer)
+            kept = [(t, s) for t, s in all_chunks if s < cutoff] if not final else all_chunks
+        if not kept:
+            return  # buffer 不足一切（内容太短），等下一批
+
+        # 4. 组装本批记录（全局坐标：父块起点 + 小块父内偏移）
+        parent_start_batch = parent_seq
+        batch_parents: list[tuple[str, int]] = []
+        child_records: list[tuple[str, int, str]] = []
+        if USE_PARENT_CHILD:
+            for ptext, pstart in kept:
+                pid = parent_id_for(filename, parent_seq)
+                batch_parents.append((ptext, buffer_start + pstart))
+                for ctext, cstart in text_splitter.split_child_positions(ptext):
+                    child_records.append((ctext, buffer_start + pstart + cstart, pid))
+                parent_seq += 1
+        else:
+            batch_parents = [(t, buffer_start + s) for t, s in kept]
+            child_records = [(t, buffer_start + s, "") for t, s in kept]
+
+        # 5. 页码 + 章节定位（page_starts/headings 已累计到本批，bisect 全局坐标）
+        positions = [r[1] for r in child_records]
+        pages_batch = (
+            document_loader.locate_pages_from_positions(positions, page_starts)
+            if page_starts else None
+        )
+        headings_batch = document_loader.locate_headings_from_positions(positions, headings_global)
+
+        # 6. 嵌入并写入（全局序号偏移，分批不撞 ID）
+        cb(f"chunks:{child_seq + len(child_records)}")
+        if USE_PARENT_CHILD:
+            n = store.add_parent_child_chunks(
+                batch_parents, child_records, source=filename,
+                pages=pages_batch, headings=headings_batch,
+                progress_callback=cb, doc_meta=doc_meta,
+                child_start=child_seq, parent_start=parent_start_batch,
+            )
+        else:
+            n = store.add_chunks_fast(
+                [t for t, _, _ in child_records], source=filename,
+                pages=pages_batch, headings=headings_batch,
+                progress_callback=cb, doc_meta=doc_meta, child_start=child_seq,
+            )
+        total_children += n
+        child_seq += len(child_records)
+
+        # 7. 消费缓冲：保留最后一个块末尾之后的内容（保留区）
+        last_text, last_start = kept[-1]
+        consumed = last_start + len(last_text)
+        buffer = buffer[consumed:]
+        buffer_start += consumed
+
+    try:
+        for batch, first_page in document_loader.iter_pdf_page_batches(path, PDF_PAGE_BATCH, cb):
+            _absorb(batch, first_page, final=False)
+        _absorb([], 0, final=True)  # flush：切完剩余缓冲
+    except Exception:
+        # 失败回滚：删除已写入的块，不留半份文档
+        rolled = 0
+        try:
+            rolled = store.delete_document(filename)
+        except Exception:
+            logger.warning("回滚清理失败: %s", filename, exc_info=True)
+        logger.warning(
+            "流水线入库失败已回滚: 用户=%s, %s, 清理 %d 块",
+            user, filename, rolled,
+        )
+        raise
+
+    cb("done")
+    return {
+        "filename": filename,
+        "chunks": total_children,
+        "user": store.user,
+        "paged": True,
+        "chunk_mode": "parent_child" if USE_PARENT_CHILD else "flat",
+        "pipeline": "stream",
+        "doc_date": doc_date,
+        "doc_version": doc_version,
+    }
+
+
 def list_documents(user: str = DEFAULT_USER) -> list[dict]:
     """列出指定用户知识库中的文档（文件名 + 小块数 + 父块数 + 最大页码）。"""
     return get_store(user).list_documents()
@@ -285,6 +450,7 @@ async def chat(
     question: str,
     history: Optional[List[dict]] = None,
     user: str = DEFAULT_USER,
+    progress_cb: Optional[Callable[[dict], None]] = None,
 ) -> dict:
     """问答流程：混合检索（小块）→ 重排 → 阈值拒答 → 父块回溯 → 拼 Prompt
     → LLM（含 Prompt Injection 标记）→ 蕴含裁判反思（混合重试）。
@@ -296,6 +462,8 @@ async def chat(
         question: 用户问题。
         history: 对话历史。
         user: 用户名（X-User 请求头，决定检索哪个 collection）。
+        progress_cb: 可选进度回调，接收 {"stage", "message"}，仅用于 SSE 状态提示，
+            不参与任何业务判断（默认 None 时行为与改前完全一致）。
 
     返回:
         {
@@ -305,6 +473,7 @@ async def chat(
         }
     """
     store = get_store(user)
+    cb = progress_cb or (lambda _: None)
 
     # 历史压缩（超长时压缩早期对话为摘要）
     trimmed_history = await history_manager.compress_history(history or [])
@@ -316,6 +485,12 @@ async def chat(
     reflection_log: list[dict] = []
 
     for attempt in range(RAG_MAX_RETRY + 1):
+        cb({
+            "stage": "retrieving",
+            "message": "正在检索知识库…" if attempt == 0 else f"正在重新检索（第 {attempt} 次重试）…",
+        })
+        await asyncio.sleep(0)  # 先让 SSE 刷出状态，再进入阻塞型检索
+
         # 1. 混合检索：向量召回语义相关 + BM25 召回关键词精确匹配，取并集去重
         use_parent_backtrack = USE_PARENT_CHILD
         if USE_PARENT_CHILD:
@@ -354,6 +529,10 @@ async def chat(
         )
 
         # 2. 重排，取 top_k（分数写入 metadata["rerank_score"]）
+        cb({
+            "stage": "reranking",
+            "message": f"已完成检索，命中 {len(candidates)} 片，重排中…",
+        })
         docs = await reranker.rerank(question, candidates, top_k=TOP_K)
 
         # 3. 阈值拒答：top_k 分数全低于阈值时跳过 LLM 直接拒答（省一次 LLM 调用）
@@ -398,6 +577,10 @@ async def chat(
                 break
 
         # 5. 异步调 LLM（上下文用父块；重试时前置纸条 retry_hint）
+        cb({
+            "stage": "generating",
+            "message": "生成回答中…" if attempt == 0 else f"生成回答中（第 {attempt} 次重试）…",
+        })
         answer = await llm_client.chat(
             question, context_docs, history=trimmed_history, retry_hint=retry_hint
         )

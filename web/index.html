@@ -275,7 +275,7 @@
       <div class="file-row">
         <input type="date" id="ragDocDate" title="文档日期（可选，YYYY-MM-DD）">
         <input type="text" id="ragDocVersion" placeholder="版本号（可选，如 v2.0）" maxlength="16" style="max-width:170px;">
-        <span class="hint">冲突仲裁字段（可选）：片段冲突时优先采信日期更新/版本更新的文档</span>
+        <span class="hint">冲突仲裁字段（可选）：版本冲突时按此采信更新的一方；口径冲突时不据此裁决，仅标注来源</span>
       </div>
       <div class="file-row">
         <input type="file" id="ragFolder" webkitdirectory multiple>
@@ -327,6 +327,50 @@ function esc(s) {
 
 function loading(text) {
   return '<div class="card"><div class="loading"><span class="spinner"></span>' + esc(text) + "</div></div>";
+}
+
+/* ---------- SSE 状态进度流（POST + 手写解析，EventSource 不支持 POST） ---------- */
+function streamSSE(url, headers, body, on) {
+  return fetch(url, { method: "POST", headers: headers, body: JSON.stringify(body) })
+    .then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          var msg = "HTTP " + r.status;
+          try { var j = JSON.parse(t); if (j.detail) msg = j.detail; } catch (e) {}
+          throw new Error(msg);
+        });
+      }
+      if (!r.body) throw new Error("当前浏览器不支持流式响应");
+      var reader = r.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = "";
+      function handleBlock(block) {
+        var evt = "message", data = "";
+        block.split("\n").forEach(function (line) {
+          if (line.indexOf("event:") === 0) evt = line.slice(6).trim();
+          else if (line.indexOf("data:") === 0) data += line.slice(5).trim();
+        });
+        if (!data) return;
+        var payload;
+        try { payload = JSON.parse(data); } catch (e) { return; }
+        if (evt === "status" && on.status) on.status(payload);
+        else if (evt === "final" && on.final) on.final(payload);
+        else if (evt === "error" && on.error) on.error(payload.error || "服务端处理失败");
+      }
+      function pump() {
+        return reader.read().then(function (res) {
+          if (res.done) return;
+          buf += decoder.decode(res.value, { stream: true });
+          var idx;
+          while ((idx = buf.indexOf("\n\n")) >= 0) {
+            handleBlock(buf.slice(0, idx));
+            buf = buf.slice(idx + 2);
+          }
+          return pump();
+        });
+      }
+      return pump();
+    });
 }
 
 /* ---------- 通用复制 ---------- */
@@ -454,12 +498,16 @@ var sqlClarifyOrig = null; // 待澄清的原问题（模型返回 clarify 时�
 function submitSql(q, clarification, isClarify) {
   var btn = isClarify ? $("sqlClarifyBtn") : $("sqlBtn");
   if (btn) { btn.disabled = true; btn.textContent = "查询中…"; }
-  $("sqlResult").innerHTML = loading("正在选表、生成并校验 SQL，请稍候…");
+  $("sqlResult").innerHTML = loading("正在选择数据表…");
   var payload = { question: q };
   if (clarification) payload.clarification = clarification;
-  fetch("/ask", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": apiKey() }, body: JSON.stringify(payload) })
-    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-    .then(renderSql)
+  streamSSE("/ask/stream", { "Content-Type": "application/json", "X-API-Key": apiKey() }, payload, {
+    status: function (d) { $("sqlResult").innerHTML = loading(d.message || "处理中…"); },
+    final: renderSql,
+    error: function (msg) {
+      $("sqlResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(msg) + "</div></div>";
+    }
+  })
     .catch(function (e) { $("sqlResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(e.message) + "</div></div>"; })
     .finally(function () { if (btn) { btn.disabled = false; btn.textContent = isClarify ? "提交补充" : "提 问"; } });
 }
@@ -509,10 +557,14 @@ function askRag() {
   var q = $("ragQ").value.trim(); if (!q) { $("ragQ").focus(); return; }
   pushHist("rag_history", q);
   var btn = $("ragBtn"); btn.disabled = true; btn.textContent = "问答中…";
-  $("ragResult").innerHTML = loading("正在检索知识库并生成回答…");
-  fetch("/rag/chat", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": apiKey(), "X-User": userId() }, body: JSON.stringify({ question: q, history: [] }) })
-    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-    .then(renderRag)
+  $("ragResult").innerHTML = loading("正在检索知识库…");
+  streamSSE("/rag/chat/stream", { "Content-Type": "application/json", "X-API-Key": apiKey(), "X-User": userId() }, { question: q, history: [] }, {
+    status: function (d) { $("ragResult").innerHTML = loading(d.message || "处理中…"); },
+    final: renderRag,
+    error: function (msg) {
+      $("ragResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(msg) + "</div></div>";
+    }
+  })
     .catch(function (e) { $("ragResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(e.message) + "</div></div>"; })
     .finally(function () { btn.disabled = false; btn.textContent = "提 问"; });
 }
@@ -527,6 +579,13 @@ function resetIngestBtn() {
 function doIngest(replace) {
   var f = $("ragFile").files[0];
   var btn = $("ragIngestBtn"), msg = $("ragIngestMsg");
+  // 大文件分流：≥ ASYNC_THRESHOLD_MB 走异步任务（受理即返回，轮询进度）
+  if (f.size >= ASYNC_THRESHOLD_MB * 1024 * 1024) {
+    btn.disabled = true;
+    btn.textContent = "上传受理中…";
+    doIngestAsync(f, replace);
+    return;
+  }
   btn.disabled = true;
   btn.textContent = replace ? "替换中…" : "入库中…";
   var fd = new FormData();
@@ -562,6 +621,78 @@ function doIngest(replace) {
     });
 }
 var MAX_UPLOAD_MB = 50;  // 与后端 MAX_UPLOAD_MB 保持一致
+var ASYNC_THRESHOLD_MB = 10;  // 与后端 ASYNC_THRESHOLD_MB 保持一致：超过即走异步任务
+function stageText(s) {
+  if (!s) return "排队中";
+  if (s === "parsing") return "解析文档…";
+  if (s.indexOf("ocr:") === 0) return "OCR 识别扫描页 " + s.slice(4) + "（较慢，请耐心等待）";
+  if (s.indexOf("pages:") === 0) return "处理页码 " + s.slice(6);
+  if (s.indexOf("chunks:") === 0) return "已切分 " + s.slice(7) + " 块";
+  if (s.indexOf("embedding:") === 0) return "向量化 " + s.slice(10) + " 块…";
+  if (s === "storing") return "写入向量库…";
+  if (s === "queued" || s === "starting") return "排队中…";
+  if (s === "done") return "完成";
+  return s;
+}
+function doIngestAsync(f, replace) {
+  var btn = $("ragIngestBtn"), msg = $("ragIngestMsg");
+  var fd = new FormData();
+  fd.append("file", f);
+  if (replace) fd.append("replace", "true");
+  var dd = $("ragDocDate") ? $("ragDocDate").value : "";
+  var dv = $("ragDocVersion") ? $("ragDocVersion").value.trim() : "";
+  if (dd) fd.append("doc_date", dd);
+  if (dv) fd.append("doc_version", dv);
+  fetch("/rag/ingest/async", {
+    method: "POST",
+    headers: { "X-API-Key": apiKey(), "X-User": userId() },
+    body: fd,
+  })
+    .then(function (r) {
+      if (r.status === 409 || r.status === 413 || r.status === 400) {
+        return r.json().then(function (e) { throw new Error(e.detail || ("HTTP " + r.status)); });
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function (d) {
+      var line = "任务已受理：" + d.filename + "（" + d.size_mb + "MB，" +
+        (d.pipeline === "stream" ? "按页流水线" : "标准管线") + "）";
+      if (d.priority === "low") line += "，大文件已进低优先级队列";
+      line += "，后台处理中…";
+      msg.textContent = line;
+      pollAsyncTask(d.task_id, msg, btn);
+    })
+    .catch(function (e) {
+      msg.textContent = "入库失败：" + e.message;
+      resetIngestBtn();
+    });
+}
+function pollAsyncTask(taskId, msg, btn) {
+  fetch("/rag/tasks/" + taskId, { headers: { "X-API-Key": apiKey(), "X-User": userId() } })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function (t) {
+      if (t.status !== "completed") {
+        var line = "处理中：" + stageText(t.stage || t.current);
+        if (t.priority === "low") line += "（低优先级队列）";
+        msg.textContent = line;
+        setTimeout(function () { pollAsyncTask(taskId, msg, btn); }, 1000);
+        return;
+      }
+      if (t.failed && t.failed.length) {
+        msg.textContent = "入库失败：" + t.failed[0].error;
+      } else {
+        msg.textContent = "已入库 " + t.results[0].chunks + " 块（" + t.results[0].source + "）";
+        $("ragFile").value = "";
+      }
+      resetIngestBtn();
+      loadRagDocs();
+    })
+    .catch(function (e) {
+      msg.textContent = "查询进度失败：" + e.message;
+      resetIngestBtn();
+    });
+}
 function ingestRag() {
   var f = $("ragFile").files[0];
   var btn = $("ragIngestBtn"), msg = $("ragIngestMsg");

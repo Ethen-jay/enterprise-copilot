@@ -1,5 +1,5 @@
 {
-  "run_time": "20261014_162214",
+  "run_time": "20261019_102900",
   "engine": "skills.rag_qa.rag_engine.chat",
   "user": "default",
   "total": 15,
@@ -24,7 +24,7 @@
       "expected_points": [
         "2020年7月31日"
       ],
-      "answer": "北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正式向全球用户提供高精度定位服务。\n\n[来源: benchmark_test.md#70]",
+      "answer": "北斗三号系统于2020年7月31日正式开通全球服务，标志着北斗系统正式向全球用户提供高精度定位服务。[来源: benchmark_test.md#70]\n\n（注：参考片段中多个分块均记载了相同日期，无冲突信息。）",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -62,7 +62,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 5.1
+      "elapsed_sec": 18.2
     },
     {
       "id": "R02",
@@ -72,7 +72,7 @@
       "expected_points": [
         "10米"
       ],
-      "answer": "北斗系统的定位精度优于10米。[来源: benchmark_test.md#18]",
+      "answer": "北斗系统的定位精度优于10米。[来源: benchmark_test.md#18]\n\n（说明：参考片段中多个分块对定位精度的表述一致，均为\"优于10米\"，不存在冲突。）",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -110,7 +110,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 3.0
+      "elapsed_sec": 2.3
     },
     {
       "id": "R03",
@@ -120,7 +120,7 @@
       "expected_points": [
         "20纳秒"
       ],
-      "answer": "北斗系统的授时精度优于20纳秒。\n\n[来源: benchmark_test.md#108]",
+      "answer": "北斗系统的授时精度优于20纳秒。[来源: benchmark_test.md#108]\n\n（说明：片段 benchmark_test.md#88、benchmark_test.md#125 中也有相同表述，内容一致，无冲突。）",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -158,7 +158,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 3.2
+      "elapsed_sec": 2.1
     },
     {
       "id": "R04",
@@ -168,7 +168,7 @@
       "expected_points": [
         "0.2米/秒或0.2米每秒"
       ],
-      "answer": "北斗系统的测速精度优于0.2米/秒。\n\n[来源: benchmark_test.md#5]",
+      "answer": "北斗系统的测速精度优于0.2米/秒。[来源: benchmark_test.md#5]\n\n（说明：参考片段中多个分块均给出相同表述，如 benchmark_test.md#108、benchmark_test.md#125，内容一致，无冲突。）",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -206,7 +206,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 3.0
+      "elapsed_sec": 2.4
     },
     {
       "id": "R05",
@@ -218,7 +218,7 @@
         "地面段",
         "用户段"
       ],
-      "answer": "北斗卫星导航系统（BDS）由空间段、地面段和用户段三部分组成。\n\n[来源: benchmark_test.md#93]",
+      "answer": "北斗卫星导航系统（BDS）由空间段、地面段和用户段三部分组成。[来源: benchmark_test.md#93]\n\n其中，空间段由若干地球静止轨道卫星、倾斜地球同步轨道卫星和中圆地球轨道卫星组成；地面段包括主控站、注入站和监测站等；用户段包括各类北斗兼容芯片、模块和终端。[来源: benchmark_test.md#63][来源: benchmark_test.md#93]",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -264,7 +264,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 3.0
+      "elapsed_sec": 2.9
     },
     {
       "id": "R06",
@@ -275,7 +275,7 @@
         "厘米级",
         "毫米级"
       ],
-      "answer": "北斗地基增强系统可提供厘米级乃至毫米级定位服务，满足测绘和精密农业需求。\n\n[来源: benchmark_test.md#46]",
+      "answer": "北斗地基增强系统可提供厘米级乃至毫米级的定位服务，满足测绘和精密农业需求。[来源: benchmark_test.md#46]\n\n（说明：该表述在 benchmark_test.md#46、#117、#1 等多个片段中一致出现，无冲突。）",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -317,7 +317,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 2.8
+      "elapsed_sec": 2.9
     },
     {
       "id": "R07",
@@ -375,7 +375,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 3.0
+      "elapsed_sec": 2.7
     },
     {
       "id": "R08",
@@ -388,7 +388,7 @@
         "兼容",
         "渐进"
       ],
-      "answer": "北斗系统的建设遵循自主、开放、兼容、渐进原则，与GPS、GLONASS和Galileo系统兼容互操作。\n\n[来源: benchmark_test.md#8]",
+      "answer": "北斗系统的建设遵循**自主、开放、兼容、渐进**原则，并与GPS、GLONASS和Galileo系统兼容互操作。[来源: benchmark_test.md#8]\n\n（说明：参考片段中多处重复出现同一表述，内容一致，无冲突。）",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -438,7 +438,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 3.2
+      "elapsed_sec": 2.8
     },
     {
       "id": "R09",
@@ -449,7 +449,7 @@
         "短报文",
         "卫星"
       ],
-      "answer": "北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字信息，其他GNSS系统不具备此能力。\n\n[来源: benchmark_test.md#47]",
+      "answer": "北斗系统的短报文通信功能是其独特优势，用户可以通过卫星发送简短文字信息，其他GNSS系统不具备此能力。[来源: benchmark_test.md#47]\n\n（该表述在参考片段 benchmark_test.md#16、benchmark_test.md#114 中也有相同记载，内容一致，无冲突。）",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -491,7 +491,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 3.0
+      "elapsed_sec": 2.6
     },
     {
       "id": "R10",
@@ -503,7 +503,7 @@
         "GLONASS",
         "Galileo"
       ],
-      "answer": "北斗系统与GPS、GLONASS和Galileo系统兼容互操作。[来源: benchmark_test.md#56]",
+      "answer": "北斗系统与 GPS、GLONASS 和 Galileo 系统兼容互操作，其建设遵循自主、开放、兼容、渐进原则。[来源: benchmark_test.md#56]\n\n（说明：片段 benchmark_test.md#17 和 benchmark_test.md#8 中也有相同表述，内容一致，无冲突。）",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -549,7 +549,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 2.7
+      "elapsed_sec": 2.5
     },
     {
       "id": "R11",
@@ -557,7 +557,7 @@
       "kind": "no_evidence",
       "question": "北斗导航系统建设至今的总投资金额是多少？",
       "expected_points": [],
-      "answer": "根据现有文档无法回答该问题。\n\n参考片段中介绍了北斗系统的发展历程、技术特点、系统组成和应用领域等内容，但均未提及建设至今的总投资金额。\n\n[来源: 中文测试文档.md#0][来源: benchmark_test.md#17][来源: benchmark_test.md#6]",
+      "answer": "根据现有文档无法回答该问题。\n\n参考片段中介绍了北斗系统的发展历程、技术特点、系统组成和应用领域，但均未提及建设总投资金额的相关信息。\n\n[来源: 中文测试文档.md#0]",
       "citations": [
         {
           "file": "中文测试文档.md",
@@ -596,7 +596,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 2.9
+      "elapsed_sec": 2.4
     },
     {
       "id": "R12",
@@ -604,7 +604,7 @@
       "kind": "no_evidence",
       "question": "北斗三号卫星的设计寿命是多少年？",
       "expected_points": [],
-      "answer": "根据现有文档无法回答该问题。\n\n[来源: 中文测试文档.md#0]",
+      "answer": "根据现有文档无法回答该问题。参考片段中没有提及北斗三号卫星的设计寿命信息。\n\n[来源: 中文测试文档.md#0]",
       "citations": [
         {
           "file": "中文测试文档.md",
@@ -643,7 +643,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 3.1
+      "elapsed_sec": 2.8
     },
     {
       "id": "R13",
@@ -657,7 +657,7 @@
         "passed": true,
         "no_answer": true,
         "reason": "low_relevance",
-        "max_score": 0.0658,
+        "max_score": 0.0652,
         "log": []
       },
       "checks": [
@@ -668,7 +668,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 1.2
+      "elapsed_sec": 0.9
     },
     {
       "id": "R14",
@@ -676,7 +676,7 @@
       "kind": "no_evidence",
       "question": "北斗短报文通信一次最多能发送多少个汉字？",
       "expected_points": [],
-      "answer": "根据现有文档无法回答该问题。\n\n参考片段中仅提到北斗系统具备短报文通信功能、可发送简短文字信息，但未提及单次最多可发送多少个汉字的具体数值。\n\n[来源: benchmark_test.md#114]",
+      "answer": "根据现有文档无法回答该问题。\n\n参考片段中仅说明北斗系统具备短报文通信功能、用户可通过卫星发送简短文字信息，但未提及单次最多可发送的汉字数量。[来源: benchmark_test.md#114]",
       "citations": [
         {
           "file": "benchmark_test.md",
@@ -714,7 +714,7 @@
       ],
       "passed": true,
       "error": null,
-      "elapsed_sec": 3.3
+      "elapsed_sec": 2.8
     },
     {
       "id": "R15",
@@ -722,7 +722,7 @@
       "kind": "no_evidence",
       "question": "北斗系统的建设运营由哪家企业负责？",
       "expected_points": [],
-      "answer": "根据现有文档无法回答该问题。\n\n参考片段中仅介绍了北斗系统的组成（空间段、地面段、用户段）、建设原则、功能特点等内容，未提及负责建设运营的具体企业信息。\n\n[来源: benchmark_test.md#17]",
+      "answer": "根据现有文档无法回答该问题。\n\n参考片段中仅介绍了北斗系统的组成（空间段、地面段、用户段）、建设原则、短报文通信功能、北斗三号开通全球服务等信息，未提及负责建设运营的具体企业。\n\n[来源: benchmark_test.md#17]",
       "citations": [
         {
           "file": "benchmark_test.md",

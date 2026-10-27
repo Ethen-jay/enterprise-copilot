@@ -91,8 +91,10 @@ curl -H "Content-Type: application/json" -H "X-User: alice" -d '{"question":"...
 | POST | `/rag/chat` | 知识库问答（检索→重排→LLM→蕴含裁判反思） |
 | POST | `/rag/ingest` | 文档入库（支持 replace 同名替换、doc_date/doc_version 仲裁字段） |
 | POST | `/rag/ingest/stream` | SSE 流式入库（实时推送解析/分块/embedding/OCR 进度） |
-| POST | `/rag/ingest/batch` | 批量导入（返回任务 ID，后台逐份处理） |
-| GET | `/rag/tasks/{task_id}` | 批量导入进度查询 |
+| POST | `/rag/ingest/async` | 大文件异步入库（≥10MB 受理即返回任务 ID，PDF 走按页流水线） |
+| POST | `/rag/ingest/batch` | 批量导入（返回任务 ID，入队后台逐份处理） |
+| GET | `/rag/tasks/{task_id}` | 入库任务进度查询（单文件任务含细粒度 stage） |
+| GET | `/rag/tasks/{task_id}/events` | 入库任务 SSE 进度流（stage 变化 + final 结果） |
 | GET | `/rag/documents` | 知识库文档列表（小块数/父块数/最大页码） |
 | DELETE | `/rag/documents?source=` | 按文件名删除文档 |
 | GET | `/rag/health` | RAG 健康检查 |
@@ -125,8 +127,9 @@ curl -H "Content-Type: application/json" -H "X-User: alice" -d '{"question":"...
 - Small-to-Big 父子分块：小块（200 字）做向量检索，命中后回溯父块（1000 字）喂 LLM；`USE_PARENT_CHILD=false` 可回退单层分块。
 - 混合检索：向量（bge-large-zh）+ BM25 关键词召回取并集，bge-reranker-v2-m3 重排；重排分数全低于阈值（0.3）时引擎快拒答。
 - 三层防幻觉：system prompt 约束 → LLM 蕴含裁判（独立 `reflection.py`）→ 病因分流重试（材料不够扩检索 / 编造与缺引用塞纸条重写，最多 2 次）。
-- 冲突仲裁：入库可指定 `doc_date`/`doc_version`，片段冲突时 prompt 标注新旧，模型按"日期更新/版本更新"采信并说明依据。
+- 冲突仲裁（两类分开处理）：入库可指定 `doc_date`/`doc_version`，prompt 标注新旧；**版本冲突**（同一事物的不同版本）按日期/版本采信更新方并说明依据；**口径冲突**（不同部门各自有效的定义/统计口径，无新旧关系）不按日期采信，必须并列呈现各方说法并说明差异所在，交用户自行判断。差异说明只能用片段内表述归纳，不得臆测。
 - 扫描版 PDF OCR 兜底：页文本 <10 字符且含图像时走 RapidOCR（PP-OCRv4），按页判断支持混合 PDF，OCR 结果更长才采纳。
+- 大文件四层防线：① 入口流式落盘 + 大小上限（默认 50MB，超限 413 快速拒绝）；② ≥10MB 走异步任务（`/rag/ingest/async` 受理即返回任务 ID，轮询 `/rag/tasks/{id}` 或订阅 SSE `/rag/tasks/{id}/events`）；③ PDF 按页流水线（每批 50 页解析→分块→嵌入→入库，内存峰值从整本文档降到一批页，批间 carry-over 缓冲防切断父块，失败自动回滚不留半份文档）；④ ≥20MB 进低优先级队列（典型为扫描版 PDF，普通任务优先）；全部任务经优先级队列单 worker 串行执行，消除并发写 Chroma 的索引损坏风险。
 - 外部 API 指数退避重试：429/5xx/网络异常自动重试（全抖动），embedding/rerank/LLM 三客户端统一接入。
 - Prompt Injection 检测：检索片段含"忽略以上指令"类文本时打日志标记，system prompt 常驻防护规则兜底。
 

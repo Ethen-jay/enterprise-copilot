@@ -21,12 +21,14 @@ main.py —— FastAPI 服务入口（阶段 D）
     python -m uvicorn app.main:app --host 127.0.0.1 --port 8010
 """
 
+import asyncio
+import json
 import re
 import sqlite3
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from fastapi import APIRouter, FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -62,6 +64,11 @@ def sanitize_sql_error(err: str) -> str:
 
 # 路由抽象成 APIRouter：独立启动（本文件 app）与 gateway 统一入口（单端口 8000）复用同一份
 router = APIRouter()
+
+
+def _sse(event: str, data) -> str:
+    """统一 SSE 帧格式：event 名 + 单行 JSON data + 空行结尾。"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 # ----------------------------------------------------------------------
@@ -133,10 +140,24 @@ def health():
 # ----------------------------------------------------------------------
 @router.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
+    """自然语言 → SQL → 结果（JSON）。行为与改造前一致。"""
+    return _ask_pipeline(req)
+
+
+def _ask_pipeline(
+    req: AskRequest,
+    progress: Optional[Callable[[str, str], None]] = None,
+) -> AskResponse:
+    """问答主链路（/ask 与 /ask/stream 共用）：选表 → 生成 SQL → 守卫 → 执行（失败自动修复 1 次）。
+
+    progress(stage, message) 仅用于 SSE 状态提示，不参与任何业务判断。
+    """
+    emit = progress or (lambda stage, message: None)
     question = req.question.strip()
     resp = AskResponse(question=question)
 
     # 动态锚点：一次请求内取一次，schema 上下文与 system prompt 保持同一锚点
+    emit("selecting", "正在选择数据表…")
     anchor_info = get_anchor_date()
     print("[Ask] 动态锚点：%s（%s）" % (anchor_info.date, anchor_info.source))
 
@@ -154,12 +175,14 @@ def ask(req: AskRequest):
         schema_context = ""
 
     # 2) 调大模型生成 SQL（可能是多轮：携带用户对上一轮 CLARIFY 的补充）
+    emit("generating", "已命中 %d 张表，正在生成 SQL…" % len(resp.picked_tables))
     try:
         llm_result = generate_sql(question, schema_context,
                                   anchor_date=anchor_info.date,
                                   snapshot_date=get_snapshot_date(),
                                   clarification=req.clarification.strip())
     except LLMError as e:
+        emit("error", "生成 SQL 失败：%s" % e)
         resp.error = str(e)
         return resp
     resp.model = llm_result.model
@@ -167,48 +190,60 @@ def ask(req: AskRequest):
 
     # 模型主动声明无法回答
     if llm_result.refusal:
+        emit("no_sql", "模型判断该问题无法用数据回答")
         resp.error = llm_result.refusal
         return resp
 
     # 模型要求用户补充信息：返回澄清问题，本轮不生成/不执行 SQL
     if llm_result.clarify:
+        emit("clarify", "需要你补充信息后才能生成 SQL")
         resp.clarify = llm_result.clarify
         return resp
 
     resp.sql = llm_result.sql
 
     # 3) 只读守卫
+    emit("guarding", "SQL 已生成，正在做只读守卫校验…")
     guarded = check_sql(llm_result.sql)
     if not guarded.ok:
+        emit("guard_rejected", "只读守卫未通过：%s" % guarded.reason)
         resp.error = "SQL 未通过只读守卫，已拒绝执行：%s" % guarded.reason
         return resp
     resp.sql = guarded.sql  # 可能被自动补过 LIMIT，以最终版回显
 
     # 4) 只读执行；失败时把原 SQL + 报错回喂模型自动修正，再走一遍守卫+执行（最多 1 次）
+    emit("executing", "守卫通过，正在执行查询…")
     try:
         result = execute_select(guarded.sql)
     except ReadonlyExecError as first_err:
         print("[Ask] SQL 执行失败，自动修复重试：%s" % first_err)
+        emit("repairing", "执行失败，正在把报错回喂模型自动修复…")
         try:
             fix = regenerate_sql(question, schema_context, guarded.sql,
                                  sanitize_sql_error(str(first_err)),
                                  anchor_date=anchor_info.date,
                                  snapshot_date=get_snapshot_date())
         except LLMError as e:
+            emit("error", "自动修复时调用模型失败：%s" % e)
             resp.error = "%s（自动修复时调用模型失败：%s）" % (first_err, e)
             return resp
         # 模型判断问题本身答不了
         if fix.refusal:
+            emit("no_sql", "模型判断该问题无法用数据回答")
             resp.error = "%s（自动修复：%s）" % (first_err, fix.refusal)
             return resp
         # 修正版仍须过只读守卫，杜绝修复环节引入写操作
+        emit("guarding", "修正版 SQL 已生成，正在重新做只读守卫校验…")
         g2 = check_sql(fix.sql)
         if not g2.ok:
+            emit("guard_rejected", "修正版 SQL 未通过只读守卫：%s" % g2.reason)
             resp.error = "%s（修正版 SQL 未通过只读守卫：%s）" % (first_err, g2.reason)
             return resp
+        emit("executing", "修正版 SQL 守卫通过，正在重新执行查询…")
         try:
             result = execute_select(g2.sql)
         except ReadonlyExecError as e2:
+            emit("error", "已自动修正重试仍失败：%s" % e2)
             resp.error = "%s；已自动修正重试仍失败：%s" % (first_err, e2)
             return resp
         # 修复成功：回显修正后的 SQL 与口径，并提示用户
@@ -221,10 +256,62 @@ def ask(req: AskRequest):
     resp.rows = result["rows"]
     resp.row_count = result["row_count"]
     resp.truncated = result["truncated"]
+    emit("executed", "执行完成，返回 %d 行" % resp.row_count)
 
     print("[Ask] 问题=%s | 表=%s | 返回 %d 行"
           % (question, resp.picked_tables, resp.row_count))
     return resp
+
+
+@router.post("/ask/stream")
+async def ask_stream(req: AskRequest):
+    """SSE 状态进度流：选表中 → 生成 SQL → 守卫校验 → 执行中 → 执行完成，最后 final 返回完整 AskResponse。
+
+    结果表格是结构化数据，整体在 final 一次性返回；/ask 的 JSON 行为保持不变。
+    """
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def progress(stage: str, message: str) -> None:
+        # 管线在线程池中执行，入队需回到事件循环线程（客户端已断开时循环可能已关闭）
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, {"stage": stage, "message": message})
+        except RuntimeError:
+            pass
+
+    async def event_generator():
+        # 阻塞型管线放线程池，保证状态可实时推送
+        task = loop.run_in_executor(None, lambda: _ask_pipeline(req, progress))
+        getter: Optional[asyncio.Task] = None
+        try:
+            while True:
+                getter = asyncio.create_task(queue.get())
+                done, _ = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    yield _sse("status", getter.result())
+                else:
+                    getter.cancel()
+                if task in done:
+                    break
+
+            await asyncio.sleep(0)  # 让线程中已发出的最后一条状态入队
+            while not queue.empty():
+                yield _sse("status", queue.get_nowait())
+
+            try:
+                resp = task.result()
+            except Exception as e:
+                print("[Ask] 流式问答异常：%s" % e)
+                yield _sse("error", {"stage": "error", "error": "问答失败: %s" % e})
+            else:
+                yield _sse("final", resp.model_dump())
+        finally:
+            if getter is not None and not getter.done():
+                getter.cancel()
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ----------------------------------------------------------------------
