@@ -274,6 +274,10 @@
         <button data-q="工单260600002的整体RTY是多少？">单工单RTY</button>
         <button data-q="本月报废率是多少？">本月报废率</button>
       </div>
+      <div class="row" style="margin-top:8px;">
+        <span id="sqlMemInfo" class="hint">会话记忆：0 轮（可追问「再按部门分组」）</span>
+        <button id="sqlMemClear" class="mini-btn" type="button">清空会话</button>
+      </div>
       <div id="sqlHistory" class="history"></div>
     </div>
     <div id="sqlResult" class="result"></div>
@@ -285,6 +289,10 @@
       <div class="row">
         <input id="ragQ" type="text" placeholder="针对知识库提问，例如：北斗三号何时开通全球服务？">
         <button id="ragBtn" class="btn">提 问</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <span id="ragMemInfo" class="hint">会话记忆：0 轮（支持「那它的精度呢」这类追问）</span>
+        <button id="ragMemClear" class="mini-btn" type="button">清空会话</button>
       </div>
       <div class="file-row">
         <input type="file" id="ragFile" accept=".pdf,.md,.markdown,.txt,.json,.jsonl">
@@ -319,7 +327,11 @@
       <div class="file-row">
         <input type="file" id="docFile">
       </div>
-      <textarea id="docInstruction" placeholder="转换指令，例如：把这个 PDF 转成 Markdown，保留表格"></textarea>
+      <textarea id="docInstruction" placeholder="转换指令，例如：把这个 PDF 转成 Markdown，保留表格；也可不选文件直接说「再把它转成 PDF」"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <span id="docMemInfo" class="hint">会话记忆：暂无转换记录</span>
+        <button id="docMemClear" class="mini-btn" type="button">清空会话记忆</button>
+      </div>
       <div class="row" style="margin-top:12px;">
         <button id="docBtn" class="btn">开始转换</button>
       </div>
@@ -334,29 +346,83 @@ var $ = function (id) { return document.getElementById(id); };
 
 /* 登录签发的访问令牌：受保护接口一律带 Authorization，服务端只认令牌里的身份 */
 function authToken() { return localStorage.getItem("token") || ""; }
+
+/* 会话 id：前端生成一次，存 sessionStorage（标签页级）；服务端按 (用户, 会话) 存记忆 */
+var SESSION_ID = (function () {
+  var id = sessionStorage.getItem("chat_session_id");
+  if (!id) {
+    if (window.crypto && crypto.randomUUID) {
+      id = crypto.randomUUID().replace(/-/g, "");
+    } else {
+      id = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    }
+    sessionStorage.setItem("chat_session_id", id);
+  }
+  return id;
+})();
+
 function authHeaders(extra) {
   var h = extra || {};
   var t = authToken();
   if (t) h["Authorization"] = "Bearer " + t;
+  h["X-Session-Id"] = SESSION_ID;   // 三个技能共用同一套会话记忆
   return h;
 }
-/* 401 统一处理：清空登录态并回到登录页（令牌过期/被吊销） */
-function expireSession() {
+/* 解析 JWT payload（只读展示/过期判断，不验签；验签由服务端负责） */
+function tokenPayload() {
+  var parts = authToken().split(".");
+  if (parts.length !== 3) return null;
+  try {
+    var b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    var json = decodeURIComponent(escape(atob(b64)));
+    return JSON.parse(json);
+  } catch (e) { return null; }
+}
+/* 登录态 = 令牌存在且未过期（留 5 秒时钟偏差），不再只看"有没有 token 字符串" */
+function tokenValid() {
+  var p = tokenPayload();
+  if (!p || !p.exp) return false;
+  return p.exp * 1000 > Date.now() + 5000;
+}
+function clearSession() {
   localStorage.removeItem("token");
   localStorage.removeItem("account");
   localStorage.removeItem("api_key");
+}
+/* 401 统一处理：清空登录态并回到登录页（令牌过期/被篡改/被吊销） */
+var _expiredOnce = false;
+function expireSession() {
+  if (_expiredOnce) return;
+  _expiredOnce = true;
+  clearSession();
   showLogin();
   $("loginMsg").textContent = "登录已过期，请重新登录";
 }
-function handleUnauthorized(r) {
-  if (r.status === 401) { expireSession(); throw new Error("登录已过期，请重新登录"); }
-  return r;
+/* 所有受保护请求的唯一入口：自动带 Bearer，401 统一触发一次兜底 */
+function apiFetch(url, opts) {
+  var init = {};
+  opts = opts || {};
+  for (var k in opts) { if (Object.prototype.hasOwnProperty.call(opts, k)) init[k] = opts[k]; }
+  init.headers = authHeaders(opts.headers || {});
+  return fetch(url, init).then(function (r) {
+    if (r.status === 401) {
+      expireSession();
+      throw new Error("登录已过期，请重新登录");
+    }
+    return r;
+  });
 }
-/* 统一响应处理：401 回登录页，非 2xx 抛错，2xx 解析 JSON */
-function ensureOk(r) {
-  handleUnauthorized(r);
-  if (!r.ok) throw new Error("HTTP " + r.status);
-  return r.json();
+/* JSON 请求：401 上面已处理；其余非 2xx 提取服务端 detail 抛错 */
+function apiJson(url, opts) {
+  return apiFetch(url, opts).then(function (r) {
+    if (r.ok) return r.json();
+    return r.text().then(function (t) {
+      var msg = "HTTP " + r.status;
+      try { var j = JSON.parse(t); if (j.detail) msg = j.detail; } catch (e) {}
+      throw new Error(msg);
+    });
+  });
 }
 
 /* 登录账号（知识库按账号隔离，仅用于展示；身份以令牌为准） */
@@ -374,9 +440,8 @@ function loading(text) {
 
 /* ---------- SSE 状态进度流（POST + 手写解析，EventSource 不支持 POST） ---------- */
 function streamSSE(url, headers, body, on) {
-  return fetch(url, { method: "POST", headers: headers, body: JSON.stringify(body) })
+  return apiFetch(url, { method: "POST", headers: headers, body: JSON.stringify(body) })
     .then(function (r) {
-      if (r.status === 401) expireSession();
       if (!r.ok) {
         return r.text().then(function (t) {
           var msg = "HTTP " + r.status;
@@ -508,7 +573,17 @@ function renderSql(data) {
   }
   sqlClarifyOrig = null;
   if (data.error) html += '<div class="card"><div class="error">' + esc(data.error) + "</div></div>";
-  if (data.explanation) html += '<div class="card"><h3>口径说明</h3><div class="explain">' + esc(data.explanation).replace(/\n/g, "<br>") + "</div></div>";
+  if (data.from_memory) {
+    html += '<div class="card"><h3>来自对话记忆</h3><div class="explain">' + esc(data.explanation || "") + "</div></div>";
+  } else if (data.explanation) {
+    html += '<div class="card"><h3>口径说明</h3><div class="explain">' + esc(data.explanation).replace(/\n/g, "<br>") + "</div></div>";
+  }
+  if (data.rewritten_question) {
+    html += '<div class="hint">结合上文，本轮按「' + esc(data.rewritten_question) + '」生成 SQL</div>';
+  }
+  if (data.memory_turns) {
+    updateMemInfo("sqlMemInfo", data.memory_turns, "可继续追问「再按部门分组」");
+  }
   if (data.picked_tables && data.picked_tables.length) {
     html += '<div class="card"><h3>命中数据表（Schema Linking）</h3><div class="chips">';
     data.picked_tables.forEach(function (t) { html += "<span>" + esc(t) + "</span>"; });
@@ -573,6 +648,16 @@ function renderRag(data) {
   if (data.error) html += '<div class="card"><div class="error">' + esc(data.error) + "</div></div>";
   if (data.answer) {
     html += '<div class="card"><div class="card-head"><h3>回答</h3><button class="mini-btn" onclick="copyAnswer(this)">复制</button></div><div class="answer">' + esc(data.answer) + "</div>";
+    // 会话记忆提示：来源、改写理解、已记住轮数
+    if (data.from_memory) {
+      html += '<div class="hint">来源：对话记忆（非文档检索）</div>';
+    } else if (data.rewritten_question) {
+      html += '<div class="hint">结合上文，检索理解为：' + esc(data.rewritten_question) + "</div>";
+    }
+    if (data.memory_turns) {
+      html += '<div class="hint">本会话已记住 ' + data.memory_turns + ' 轮</div>';
+      updateMemInfo("ragMemInfo", data.memory_turns);
+    }
     if (data.citations && data.citations.length) {
       html += '<div class="cite"><b>引用</b>';
       data.citations.forEach(function (c) {
@@ -615,7 +700,7 @@ function askRag() {
   pushHist("rag_history", q);
   var btn = $("ragBtn"); btn.disabled = true; btn.textContent = "问答中…";
   $("ragResult").innerHTML = loading("正在检索知识库…");
-  streamSSE("/rag/chat/stream", authHeaders({ "Content-Type": "application/json" }), { question: q, history: [] }, {
+  streamSSE("/rag/chat/stream", authHeaders({ "Content-Type": "application/json" }), { question: q }, {
     status: function (d) { $("ragResult").innerHTML = loading(d.message || "处理中…"); },
     final: renderRag,
     error: function (msg) {
@@ -652,19 +737,10 @@ function doIngest(replace) {
   var dv = $("ragDocVersion") ? $("ragDocVersion").value.trim() : "";
   if (dd) fd.append("doc_date", dd);
   if (dv) fd.append("doc_version", dv);
-  fetch("/rag/ingest", {
+  apiJson("/rag/ingest", {
     method: "POST",
-    headers: authHeaders(),
     body: fd,
   })
-    .then(function (r) {
-      handleUnauthorized(r);
-      if (r.status === 409 || r.status === 413 || r.status === 400 || r.status === 422) {
-        return r.json().then(function (e) { throw new Error(e.detail || ("HTTP " + r.status)); });
-      }
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    })
     .then(function (d) {
       msg.textContent = d.replaced
         ? "已替换旧版（删除 " + d.replaced_chunks + " 块），新入库 " + d.chunks + " 块：" + d.filename
@@ -701,19 +777,10 @@ function doIngestAsync(f, replace) {
   var dv = $("ragDocVersion") ? $("ragDocVersion").value.trim() : "";
   if (dd) fd.append("doc_date", dd);
   if (dv) fd.append("doc_version", dv);
-  fetch("/rag/ingest/async", {
+  apiJson("/rag/ingest/async", {
     method: "POST",
-    headers: authHeaders(),
     body: fd,
   })
-    .then(function (r) {
-      handleUnauthorized(r);
-      if (r.status === 409 || r.status === 413 || r.status === 400 || r.status === 422) {
-        return r.json().then(function (e) { throw new Error(e.detail || ("HTTP " + r.status)); });
-      }
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    })
     .then(function (d) {
       var line = "任务已受理：" + d.filename + "（" + d.size_mb + "MB，" +
         (d.pipeline === "stream" ? "按页流水线" : "标准管线") + "）";
@@ -728,8 +795,7 @@ function doIngestAsync(f, replace) {
     });
 }
 function pollAsyncTask(taskId, msg, btn) {
-  fetch("/rag/tasks/" + taskId, { headers: authHeaders() })
-    .then(ensureOk)
+  apiJson("/rag/tasks/" + taskId)
     .then(function (t) {
       if (t.status !== "completed") {
         var line = "处理中：" + stageText(t.stage || t.current);
@@ -768,8 +834,7 @@ function ingestRag() {
 
   // 第一步：先查重，同名则进入两步确认（避免大文件传完才报冲突）
   btn.disabled = true; btn.textContent = "检查中…"; msg.textContent = "";
-  fetch("/rag/documents", { headers: authHeaders() })
-    .then(ensureOk)
+  apiJson("/rag/documents")
     .then(function (d) {
       var exists = (d.documents || []).some(function (x) { return x.source === f.name; });
       if (exists) {
@@ -799,19 +864,10 @@ function startBatchIngest() {
   fd.append("replace", "false");
   files.forEach(function (f) { fd.append("files", f, f.name); });
 
-  fetch("/rag/ingest/batch", {
+  apiJson("/rag/ingest/batch", {
     method: "POST",
-    headers: authHeaders(),
     body: fd,
   })
-    .then(function (r) {
-      handleUnauthorized(r);
-      if (r.status === 400) {
-        return r.json().then(function (e) { throw new Error(e.detail || "HTTP 400"); });
-      }
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    })
     .then(function (d) {
       msg.textContent = "任务已受理：" + d.total + " 份（受理 " + d.accepted +
         "，拒收 " + d.rejected + "），后台处理中…";
@@ -824,8 +880,7 @@ function startBatchIngest() {
 }
 
 function pollBatchTask(taskId, msg, btn, input) {
-  fetch("/rag/tasks/" + taskId, { headers: authHeaders() })
-    .then(ensureOk)
+  apiJson("/rag/tasks/" + taskId)
     .then(function (t) {
       var line = "进度 " + t.done + "/" + t.total;
       if (t.current) line += "，当前：" + t.current;
@@ -936,9 +991,8 @@ function loadChunks(name, offset, box, highlightIdx) {
   // source 走查询参数：文件名可能含 "/"、"#"、"?"，放进路径会被截断
   var url = "/rag/documents/chunks?source=" + encodeURIComponent(name) +
     "&offset=" + offset + "&limit=" + RAG_CHUNK_LIMIT;
-  fetch(url, { headers: authHeaders() })
+  apiFetch(url)
     .then(function (r) {
-      handleUnauthorized(r);
       if (r.status === 404) throw new Error("该文档不在当前账号的知识库中");
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
@@ -1026,8 +1080,7 @@ function openCitation(file, chunkIdx) {
 function loadRagDocs() {
   var el = $("ragDocs");
   if (el) el.innerHTML = '<span class="hint">加载中…</span>';
-  return fetch("/rag/documents", { headers: authHeaders() })
-    .then(ensureOk)
+  return apiJson("/rag/documents")
     .then(function (d) { renderRagDocs(d.documents || []); })
     .catch(function () { if (el) el.innerHTML = '<span class="hint">文档列表加载失败</span>'; });
 }
@@ -1049,12 +1102,10 @@ function deleteRagDoc(name, btn) {
   // 第二步：真正执行删除
   clearTimeout(btn._timer);
   btn.disabled = true; btn.textContent = "删除中…";
-  fetch("/rag/documents?source=" + encodeURIComponent(name), {
+  apiFetch("/rag/documents?source=" + encodeURIComponent(name), {
     method: "DELETE",
-    headers: authHeaders(),
   })
     .then(function (r) {
-      handleUnauthorized(r);
       if (r.status === 404) { resetDelBtn(btn); loadRagDocs(); return null; }
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
@@ -1073,9 +1124,11 @@ function deleteRagDoc(name, btn) {
 function renderDoc(data) {
   var html = "";
   if (data.status === "ok") {
-    html += '<div class="card"><h3>转换成功</h3>';
+    html += '<div class="card"><h3>' + (data.message ? "来自对话记忆" : "转换成功") + "</h3>";
+    if (data.message) html += '<div class="answer">' + esc(data.message) + "</div>";
     if (data.plan && data.plan.source_format) html += '<div class="meta">' + esc(data.plan.source_format) + " → " + esc(data.plan.target_format) + "</div>";
     if (data.retry_count > 0) html += '<div class="meta">经 ' + data.retry_count + " 次重试后通过自动校验</div>";
+    if (data.memory_hint) html += '<div class="hint">' + esc(data.memory_hint) + "</div>";
     if (data.output_filename) html += '<button class="dl-btn" type="button" data-dl="' + esc(data.output_filename) + '">下载结果：' + esc(data.output_filename) + "</button>";
     html += "</div>";
   } else if (data.error) {
@@ -1086,12 +1139,12 @@ function renderDoc(data) {
   $("docResult").innerHTML = html;
   var dl = $("docResult").querySelector("[data-dl]");
   if (dl) dl.addEventListener("click", function () { downloadWithAuth(dl.getAttribute("data-dl")); });
+  refreshDocMemory();
 }
 /* 下载需要带令牌：用 fetch 取 blob 再触发保存（普通 <a> 无法附带 Authorization） */
 function downloadWithAuth(name) {
-  fetch("/doc/download/" + encodeURIComponent(name), { headers: authHeaders() })
+  apiFetch("/doc/download/" + encodeURIComponent(name))
     .then(function (r) {
-      handleUnauthorized(r);
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.blob();
     })
@@ -1107,18 +1160,27 @@ function downloadWithAuth(name) {
 function convertDoc() {
   var f = $("docFile").files[0];
   var inst = $("docInstruction").value.trim();
-  if (!f) { $("docResult").innerHTML = '<div class="card"><div class="error">请选择要转换的文件</div></div>'; return; }
   if (!inst) { $("docResult").innerHTML = '<div class="card"><div class="error">请输入转换指令</div></div>'; return; }
   var btn = $("docBtn"); btn.disabled = true; btn.textContent = "提交中…";
+
+  // 未选文件：沿用会话里最近一次上传的文件（"再把它转成 PDF"）；
+  // 没有可沿用文件时后端明确报错，不猜测文件。
+  if (!f) {
+    $("docResult").innerHTML = loading("正在沿用上文文件…");
+    var fd2 = new FormData(); fd2.append("instruction", inst);
+    apiJson("/doc/convert/followup", { method: "POST", body: fd2 })
+      .then(renderDoc)
+      .catch(function (e) {
+        $("docResult").innerHTML = '<div class="card"><div class="error">提交失败：' + esc(e.message) + "</div></div>";
+      })
+      .finally(function () { btn.disabled = false; btn.textContent = "开始转换"; });
+    return;
+  }
+
   $("docResult").innerHTML = loading("正在提交转换任务…");
   var fd = new FormData(); fd.append("file", f); fd.append("instruction", inst);
   // 异步转换：提交拿 task_id → 1 秒轮询任务状态，避免大文件长时间占用连接
-  fetch("/doc/convert/async", { method: "POST", headers: authHeaders(), body: fd })
-    .then(function (r) {
-      handleUnauthorized(r);
-      if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || ("HTTP " + r.status)); });
-      return r.json();
-    })
+  apiJson("/doc/convert/async", { method: "POST", body: fd })
     .then(function (t) {
       $("docResult").innerHTML = loading("任务已受理（" + t.task_id + "），Agent 正在规划、转换并反思校验…");
       pollDocTask(t.task_id, btn);
@@ -1130,8 +1192,7 @@ function convertDoc() {
 }
 function pollDocTask(taskId, btn) {
   var timer = setInterval(function () {
-    fetch("/doc/tasks/" + taskId, { headers: authHeaders() })
-      .then(ensureOk)
+    apiJson("/doc/tasks/" + taskId)
       .then(function (t) {
         if (t.status === "processing") return;   // 继续轮询
         clearInterval(timer);
@@ -1154,6 +1215,51 @@ function checkHealth() {
   }).catch(function () { $("healthBadge").className = "badge bad"; $("healthBadge").innerHTML = '<span class="dot"></span>后端未连接'; });
 }
 
+/* ---------- 会话记忆：状态显示与清空 ---------- */
+function updateMemInfo(id, n, extra) {
+  var el = $(id); if (!el) return;
+  if (n > 0) el.textContent = "会话记忆：已记住 " + n + " 轮" + (extra ? "（" + extra + "）" : "");
+  else el.textContent = "会话记忆：0 轮" + (extra ? "（" + extra + "）" : "");
+}
+function refreshDocMemory() {
+  apiJson("/doc/session").then(function (d) {
+    var el = $("docMemInfo"); if (!el) return;
+    if (d.last_filename) {
+      el.textContent = "会话记忆：上次 " + d.last_filename + " → " + (d.target_format || "?") +
+                       "（可直接说「再把它转成…」）";
+    } else {
+      el.textContent = "会话记忆：暂无转换记录";
+    }
+  }).catch(function () {});
+}
+function refreshMemoryInfo() {
+  apiJson("/rag/session").then(function (d) {
+    updateMemInfo("ragMemInfo", d.turns, "支持「那它的精度呢」这类追问");
+  }).catch(function () {});
+  apiJson("/session").then(function (d) {
+    updateMemInfo("sqlMemInfo", d.turns, "可追问「再按部门分组」");
+  }).catch(function () {});
+  refreshDocMemory();
+}
+function bindSessionClear(btnId, path, after) {
+  var b = $(btnId); if (!b) return;
+  b.addEventListener("click", function () {
+    b.disabled = true;
+    apiJson(path, { method: "DELETE" })
+      .then(function () { if (after) after(); })
+      .catch(function (e) { alert("清空会话失败：" + e.message); })
+      .finally(function () { b.disabled = false; });
+  });
+}
+bindSessionClear("ragMemClear", "/rag/session", function () {
+  updateMemInfo("ragMemInfo", 0, "支持「那它的精度呢」这类追问");
+  $("ragResult").innerHTML = "";
+});
+bindSessionClear("sqlMemClear", "/session", function () {
+  updateMemInfo("sqlMemInfo", 0, "可追问「再按部门分组」");
+});
+bindSessionClear("docMemClear", "/doc/session", refreshDocMemory);
+
 /* ---------- 事件绑定 ---------- */
 $("sqlBtn").addEventListener("click", askSql);
 $("sqlQ").addEventListener("keydown", function (e) { if (e.key === "Enter") askSql(); });
@@ -1172,13 +1278,14 @@ $("docInstruction").addEventListener("keydown", function (e) {
 });
 
 /* ---------- 登录 / 登出 ---------- */
-function isLoggedIn() { return !!localStorage.getItem("token"); }
+function isLoggedIn() { return tokenValid(); }
 function showLogin() { $("loginView").style.display = ""; $("mainView").style.display = "none"; }
 function showMain() {
   $("loginView").style.display = "none"; $("mainView").style.display = "";
   $("loginBadge").innerHTML = '<span class="dot"></span>已登录：' + esc(userId());
   renderHist("sql_history"); renderHist("rag_history");
   checkHealth();
+  refreshMemoryInfo();
 }
 function doLogin() {
   var account = $("loginAccount").value.trim();
@@ -1192,6 +1299,7 @@ function doLogin() {
     .then(function (r) { return r.json(); })
     .then(function (d) {
       if (d.ok && d.token) {
+        _expiredOnce = false;
         localStorage.setItem("account", d.account);
         localStorage.setItem("token", d.token);  // 身份以令牌为准，不再保存 X-User/X-API-Key
         localStorage.removeItem("api_key");
@@ -1204,9 +1312,8 @@ function doLogin() {
     .catch(function (e) { $("loginMsg").textContent = "登录请求失败：" + e.message; });
 }
 function doLogout() {
-  localStorage.removeItem("token");
-  localStorage.removeItem("account");
-  localStorage.removeItem("api_key");
+  _expiredOnce = false;
+  clearSession();
   $("loginAccount").value = ""; $("loginKey").value = ""; $("loginMsg").textContent = "";
   showLogin();
 }
@@ -1228,9 +1335,16 @@ $("loginAccount").addEventListener("keydown", function (e) { if (e.key === "Ente
 $("loginKey").addEventListener("keydown", function (e) { if (e.key === "Enter") doLogin(); });
 $("logoutBtn").addEventListener("click", doLogout);
 
-/* 初始化：检测认证状态 + 判断是否已登录 */
+/* 初始化：检测认证状态；登录态必须与令牌一致（有 account 但无有效 token 也要回登录页） */
 detectAuth();
-if (isLoggedIn()) { showMain(); } else { showLogin(); }
+if (isLoggedIn()) {
+  showMain();
+} else {
+  var hadLogin = !!authToken() || !!localStorage.getItem("account");
+  clearSession();
+  showLogin();
+  if (hadLogin) $("loginMsg").textContent = "登录已过期，请重新登录";
+}
 </script>
 </body>
 </html>

@@ -1,11 +1,15 @@
 """LLM 客户端：通过 OpenAI 兼容 API（DeepSeek）调用生成模型。"""
 
+import asyncio
+import logging
 from typing import List, Optional
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from common.llm_langchain import create_chat_openai
 from skills.rag_qa.api_retry import retry_async
+
+logger = logging.getLogger("rag_llm")
 
 # 系统指令：只能依据给定片段回答，不足就明说，不得编造；片段冲突时仲裁而非自行取舍
 SYSTEM_PROMPT = """你是一个严谨的知识问答助手。请严格遵守以下规则：
@@ -69,16 +73,19 @@ async def chat(
     context_docs: list,
     history: Optional[List[dict]] = None,
     retry_hint: Optional[str] = None,
+    standalone_question: Optional[str] = None,
 ) -> str:
     """异步调用 LLM 生成回答。
 
     参数:
-        question: 用户问题。
+        question: 用户问题（原文）。
         context_docs: 检索到的相关文档列表。
         history: 对话历史，格式 [{"role": "user"|"assistant"|"system", "content": "..."}]。
         retry_hint: 重试纸条（可选）。反思裁判判定编造/缺引用时，把无依据断言
             清单或引用指令写进重试 prompt，让模型针对性重写——只重新生成，
             不重跑检索（与 expand_retrieval 扩检索重跑组成混合重试）。
+        standalone_question: 指代消解后的独立问句（可选）。仅作理解提示，
+            事实依据仍只来自【参考片段】。
 
     返回:
         模型生成的回答文本。
@@ -102,7 +109,11 @@ async def chat(
 
     # 当前问题 + 参考片段（重试时前置【重试提示】纸条）
     context = build_context_blocks(context_docs)
-    user_content = f"【参考片段】\n{context}\n\n【用户问题】\n{question}"
+    question_text = question
+    if standalone_question and standalone_question.strip() and standalone_question.strip() != question.strip():
+        question_text = ("%s\n（结合上文，本问题理解为：%s）"
+                         % (question, standalone_question.strip()))
+    user_content = f"【参考片段】\n{context}\n\n【用户问题】\n{question_text}"
     if retry_hint:
         user_content = f"【重试提示】\n{retry_hint}\n\n{user_content}"
     messages.append(HumanMessage(content=user_content))
@@ -110,3 +121,30 @@ async def chat(
     # 限流/5xx/网络异常自动指数退避重试（覆盖 chat/历史压缩/反思校验的复用调用）
     resp = await retry_async(lambda: llm.ainvoke(messages), op="llm_chat")
     return resp.content
+
+
+async def condense_query(question: str, turns: list, timeout: float = 8.0) -> str:
+    """用最近几轮把指代/省略问句改写成独立问句（只用于检索，不作事实依据）。
+
+    失败、超时或结果异常时一律回退原问题，绝不阻塞问答主链路。
+    """
+    from common import chat_memory
+
+    prompt = chat_memory.build_condense_prompt(question, turns, "rag")
+    try:
+        llm = _get_llm()
+        messages = [
+            SystemMessage(content="你是问句改写器，只输出一句独立问句，不补充任何事实。"),
+            HumanMessage(content=prompt),
+        ]
+        resp = await asyncio.wait_for(
+            retry_async(lambda: llm.ainvoke(messages), op="llm_condense"),
+            timeout=timeout,
+        )
+        rewritten = chat_memory.sanitize_rewrite(resp.content, question)
+        if rewritten != question:
+            logger.info("RAG 查询改写生效（长度 %d → %d）", len(question), len(rewritten))
+        return rewritten
+    except Exception as e:
+        logger.warning("RAG 查询改写失败，回退原问题: %s", e)
+        return question

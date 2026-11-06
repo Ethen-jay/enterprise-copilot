@@ -142,7 +142,9 @@ def login(req: LoginRequest):
 # ----------------------------------------------------------------------
 @app.get("/", include_in_schema=False)
 def index():
-    return FileResponse(str(WEB_DIR / "index.html"))
+    # 首页内嵌全部前端逻辑：禁止缓存，避免改版后浏览器仍跑旧脚本
+    # （旧脚本可能不带 Authorization，表现为"显示已登录但请求 401"）
+    return FileResponse(str(WEB_DIR / "index.html"), headers={"Cache-Control": "no-store"})
 
 
 if __name__ == "__main__":

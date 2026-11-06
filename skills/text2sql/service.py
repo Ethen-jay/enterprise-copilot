@@ -28,15 +28,18 @@ import re
 import sqlite3
 from typing import Callable, List, Optional
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from common.auth import current_user
+from common import chat_memory
+from common.chat_memory import session_header
 from . import config
 from .anchor import get_anchor_date, get_snapshot_date
 from .schema_linker import build_context, log_link
-from .llm_client import generate_sql, regenerate_sql, LLMError
+from .llm_client import generate_sql, regenerate_sql, rewrite_question, LLMError
 from .sql_guard import check_sql
 from .executor import execute_select, ReadonlyExecError
 
@@ -100,6 +103,90 @@ class AskResponse(BaseModel):
     model: str = ""
     error: Optional[str] = None    # 非致命错误提示（无法回答/守卫拒绝/SQL执行失败）
     clarify: Optional[str] = None  # 模型要求补充信息时的澄清问题（不执行 SQL）
+    # 会话记忆：追问改写后的独立问句、本会话已记住多少轮、是否走记忆回答
+    rewritten_question: str = ""
+    used_memory: bool = False
+    memory_turns: int = 0
+    from_memory: bool = False
+
+
+# ----------------------------------------------------------------------
+# 会话记忆（Text2SQL）：记住问句、SQL、命中的表、结果摘要
+# ----------------------------------------------------------------------
+_SQL_META_RE = re.compile(r"(刚才|上一条|上一轮|上一次|上一个).{0,8}(sql|查询语句|语句)", re.IGNORECASE)
+# 带这些动作词时，用户是在"改上一条 SQL"，不是想回显它；必须走改写而非元问题通道
+_SQL_ACTION_RE = re.compile(
+    r"(加|添加|去掉|删除|改|换|排序|升序|降序|分组|过滤|限制|只看|只要|再按|按|合并|拆分|top\s*\d+|前\s*\d+)",
+    re.IGNORECASE,
+)
+
+
+def _is_sql_meta(question: str) -> bool:
+    """只有纯粹"问上一条 SQL 是什么"才算元问题；带改动动作的走追问改写。"""
+    return bool(_SQL_META_RE.search(question)) and not _SQL_ACTION_RE.search(question)
+
+
+def _remember_sql_turn(user: str, session_id: Optional[str], resp: AskResponse) -> int:
+    """把本轮问答写入会话记忆（元问题答复不再写回，避免污染"上一轮"）。"""
+    if not session_id or resp.from_memory:
+        return resp.memory_turns
+    summary = resp.sql or resp.error or resp.clarify or "（无结果）"
+    return chat_memory.append_turn(
+        user, session_id, "sql", resp.question, summary,
+        {"sql": resp.sql, "tables": resp.picked_tables,
+         "row_count": resp.row_count, "error": resp.error or "",
+         "clarify": resp.clarify or ""},
+    )
+
+
+def _resolve_sql_memory(question: str, user: str, session_id: Optional[str]):
+    """返回 (记忆应答或 None, 改写后的问句, 轮次列表)。
+
+    - "我刚才那条 SQL 是什么" → 直接基于会话记忆回答，不执行；
+    - 指代型追问 → 用最近几轮改写成独立问句（失败回退原问题）；
+    - 上一轮没有 SQL 又是纯指代 → 明确拒绝，不凭空编表。
+    """
+    turns = chat_memory.get_turns(user, session_id, "sql")
+
+    # 元问题：问上一轮问了什么（无记忆也给出明确"本会话没有记录"，不交给模型瞎猜）
+    if chat_memory.is_meta_question(question):
+        text, _ = chat_memory.meta_answer(question, turns)
+        return AskResponse(question=question, explanation=text,
+                           from_memory=True, memory_turns=len(turns)), question, turns
+
+    # 元问题：问上一条 SQL（带"加排序/换分组"等动作词的除外，那属于改动指令）
+    if _is_sql_meta(question):
+        last_sql = (turns[-1].get("extra") or {}).get("sql", "") if turns else ""
+        if last_sql:
+            return AskResponse(
+                question=question, sql=last_sql,
+                explanation="（来自对话记忆）上一轮生成的 SQL 已回显，未重新执行。",
+                from_memory=True, memory_turns=len(turns),
+            ), question, turns
+        return AskResponse(
+            question=question,
+            explanation=("（来自对话记忆）当前会话还没有生成过 SQL，无法回显。"
+                         if not turns else "（来自对话记忆）上一轮没有生成可用的 SQL，无法回显。"),
+            from_memory=True, memory_turns=len(turns),
+        ), question, turns
+
+    if not turns:
+        return None, question, turns
+
+    if not chat_memory.needs_rewrite(question):
+        return None, question, turns
+
+    last_sql = (turns[-1].get("extra") or {}).get("sql", "")
+    if not last_sql:
+        return AskResponse(
+            question=question,
+            error="上一轮没有生成可用的 SQL，无法确定你说的「它/刚才那条」指的是什么；"
+                  "请把要查询的对象、时间范围和条件说完整。",
+            memory_turns=len(turns),
+        ), question, turns
+
+    rewritten = rewrite_question(question, turns)
+    return None, rewritten, turns
 
 
 def _validate_ask(req: AskRequest) -> None:
@@ -164,23 +251,41 @@ def health():
 # 主接口：自然语言 -> SQL -> 结果
 # ----------------------------------------------------------------------
 @router.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest):
-    """自然语言 → SQL → 结果（JSON）。行为与改造前一致。"""
+def ask(
+    req: AskRequest,
+    user: str = Depends(current_user),
+    session_id: Optional[str] = Depends(session_header),
+):
+    """自然语言 → SQL → 结果（JSON）。会话记忆只影响追问改写，不改变守卫与执行约束。"""
     _validate_ask(req)
-    return _ask_pipeline(req)
+    resp = _ask_pipeline(req, user=user, session_id=session_id)
+    resp.memory_turns = _remember_sql_turn(user, session_id, resp)
+    return resp
 
 
 def _ask_pipeline(
     req: AskRequest,
     progress: Optional[Callable[[str, str], None]] = None,
+    user: str = "",
+    session_id: Optional[str] = None,
 ) -> AskResponse:
     """问答主链路（/ask 与 /ask/stream 共用）：选表 → 生成 SQL → 守卫 → 执行（失败自动修复 1 次）。
 
     progress(stage, message) 仅用于 SSE 状态提示，不参与任何业务判断。
+    会话记忆：仅把追问改写成独立问句，再走原有链路；守卫/LIMIT/超时一律不变。
     """
     emit = progress or (lambda stage, message: None)
     question = req.question.strip()
     resp = AskResponse(question=question)
+
+    # 0) 会话记忆：元问题直接回答；指代追问先改写（失败回退原问题）
+    mem_resp, effective_question, _turns = _resolve_sql_memory(question, user, session_id)
+    if mem_resp is not None:
+        return mem_resp
+    if effective_question != question:
+        resp.rewritten_question = effective_question
+        resp.used_memory = True
+        emit("rewriting", "已结合上文把追问改写为：「%s」" % effective_question)
 
     # 动态锚点：一次请求内取一次，schema 上下文与 system prompt 保持同一锚点
     emit("selecting", "正在选择数据表…")
@@ -189,7 +294,7 @@ def _ask_pipeline(
 
     # 1) Schema Linking（选表异常不致命：仍把全量表清单交给模型试一次）
     try:
-        link = build_context(question, anchor_date=anchor_info.date)
+        link = build_context(effective_question, anchor_date=anchor_info.date)
         log_link(link)
         resp.picked_tables = link.table_names
         resp.few_shots = link.few_shots
@@ -203,7 +308,7 @@ def _ask_pipeline(
     # 2) 调大模型生成 SQL（可能是多轮：携带用户对上一轮 CLARIFY 的补充）
     emit("generating", "已命中 %d 张表，正在生成 SQL…" % len(resp.picked_tables))
     try:
-        llm_result = generate_sql(question, schema_context,
+        llm_result = generate_sql(effective_question, schema_context,
                                   anchor_date=anchor_info.date,
                                   snapshot_date=get_snapshot_date(),
                                   clarification=req.clarification.strip())
@@ -246,7 +351,7 @@ def _ask_pipeline(
         emit("repairing", "执行失败，正在把报错回喂模型自动修复…")
         first_msg = sanitize_sql_error(str(first_err))
         try:
-            fix = regenerate_sql(question, schema_context, guarded.sql,
+            fix = regenerate_sql(effective_question, schema_context, guarded.sql,
                                  sanitize_sql_error(str(first_err)),
                                  anchor_date=anchor_info.date,
                                  snapshot_date=get_snapshot_date())
@@ -291,7 +396,11 @@ def _ask_pipeline(
 
 
 @router.post("/ask/stream")
-async def ask_stream(req: AskRequest):
+async def ask_stream(
+    req: AskRequest,
+    user: str = Depends(current_user),
+    session_id: Optional[str] = Depends(session_header),
+):
     """SSE 状态进度流：选表中 → 生成 SQL → 守卫校验 → 执行中 → 执行完成，最后 final 返回完整 AskResponse。
 
     结果表格是结构化数据，整体在 final 一次性返回；/ask 的 JSON 行为保持不变。
@@ -309,7 +418,9 @@ async def ask_stream(req: AskRequest):
 
     async def event_generator():
         # 阻塞型管线放线程池，保证状态可实时推送
-        task = loop.run_in_executor(None, lambda: _ask_pipeline(req, progress))
+        task = loop.run_in_executor(
+            None, lambda: _ask_pipeline(req, progress, user=user, session_id=session_id)
+        )
         getter: Optional[asyncio.Task] = None
         try:
             while True:
@@ -332,6 +443,7 @@ async def ask_stream(req: AskRequest):
                 logger.exception("Text2SQL 流式问答异常")
                 yield _sse("error", {"stage": "error", "error": "问答失败，请稍后重试（已记录日志）"})
             else:
+                resp.memory_turns = _remember_sql_turn(user, session_id, resp)
                 yield _sse("final", resp.model_dump())
         finally:
             if getter is not None and not getter.done():
@@ -340,6 +452,26 @@ async def ask_stream(req: AskRequest):
                 task.cancel()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.get("/session")
+def sql_session_info(user: str = Depends(current_user),
+                     session_id: Optional[str] = Depends(session_header)):
+    """查询 Text2SQL 会话记忆概况（前端显示"已记住 N 轮"）。"""
+    info = chat_memory.stats(user, session_id, "sql")
+    turns = chat_memory.get_turns(user, session_id, "sql")
+    if turns:
+        info["last_question"] = turns[-1].get("question", "")
+        info["last_sql"] = (turns[-1].get("extra") or {}).get("sql", "")
+    return info
+
+
+@router.delete("/session")
+def sql_session_clear(user: str = Depends(current_user),
+                      session_id: Optional[str] = Depends(session_header)):
+    """清空 Text2SQL 会话记忆（清空后追问无法再改写，回到单轮行为）。"""
+    cleared = chat_memory.clear(user, session_id, "sql")
+    return {"ok": True, "cleared": cleared}
 
 
 # ----------------------------------------------------------------------

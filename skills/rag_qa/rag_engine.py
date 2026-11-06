@@ -550,6 +550,7 @@ async def chat(
     history: Optional[List[dict]] = None,
     user: str = DEFAULT_USER,
     progress_cb: Optional[Callable[[dict], None]] = None,
+    retrieval_query: Optional[str] = None,
 ) -> dict:
     """问答流程：混合检索（小块）→ 重排 → 阈值拒答 → 父块回溯 → 拼 Prompt
     → LLM（含 Prompt Injection 标记）→ 蕴含裁判反思（混合重试）。
@@ -558,11 +559,13 @@ async def chat(
     命中后按 parent_id 回溯父块（1000 字）喂给 LLM（上下文完整）。
 
     参数:
-        question: 用户问题。
+        question: 用户问题（原文，用于回答与引用）。
         history: 对话历史。
-        user: 用户名（X-User 请求头，决定检索哪个 collection）。
+        user: 用户名（由 JWT 派生，决定检索哪个 collection）。
         progress_cb: 可选进度回调，接收 {"stage", "message"}，仅用于 SSE 状态提示，
             不参与任何业务判断（默认 None 时行为与改前完全一致）。
+        retrieval_query: 可选的独立问句（指代消解/查询改写结果）。仅用于检索与
+            重排；答案事实依据仍只来自检索到的原文，历史内容不作为事实来源。
 
     返回:
         {
@@ -573,6 +576,10 @@ async def chat(
     """
     store = get_store(user)
     cb = progress_cb or (lambda _: None)
+
+    # 检索问句：有改写结果就用改写版（指代消解后），否则用原问题。
+    # 注意：改写只服务于检索/重排，历史内容不会进入答案事实依据。
+    search_query = (retrieval_query or question).strip() or question
 
     # 历史压缩（超长时压缩早期对话为摘要）
     trimmed_history = await history_manager.compress_history(history or [])
@@ -593,13 +600,13 @@ async def chat(
         # 1. 混合检索：向量召回语义相关 + BM25 召回关键词精确匹配，取并集去重
         #    向量侧用「排除 parent」，child（父子小块）与 flat（单层/历史数据）
         #    都参与检索；parent 是零向量内部结构，永不召回。
-        vector_candidates = store.similarity_search_children(question, k=retrieve_k)
+        vector_candidates = store.similarity_search_children(search_query, k=retrieve_k)
 
         bm25_candidates: List = []
         bm25_result = _get_bm25(user)
         if bm25_result is not None:
             bm25_retriever, all_docs = bm25_result
-            bm25_top = bm25_retriever.search(question, k=retrieve_k)
+            bm25_top = bm25_retriever.search(search_query, k=retrieve_k)
             bm25_candidates = [all_docs[idx] for idx, _ in bm25_top]
 
         # 合并去重：按 (source, chunk_index) 去重
@@ -621,7 +628,7 @@ async def chat(
             "stage": "reranking",
             "message": f"已完成检索，命中 {len(candidates)} 片，重排中…",
         })
-        docs = await reranker.rerank(question, candidates, top_k=TOP_K)
+        docs = await reranker.rerank(search_query, candidates, top_k=TOP_K)
 
         # 3. 阈值拒答：top_k 分数全低于阈值时跳过 LLM 直接拒答（省一次 LLM 调用）
         refusal = _threshold_refusal(docs)
@@ -675,7 +682,8 @@ async def chat(
             "message": "生成回答中…" if attempt == 0 else f"生成回答中（第 {attempt} 次重试）…",
         })
         answer = await llm_client.chat(
-            question, context_docs, history=trimmed_history, retry_hint=retry_hint
+            question, context_docs, history=trimmed_history, retry_hint=retry_hint,
+            standalone_question=search_query,
         )
 
         # 6. 组装引用（基于命中小块，PDF 分块带 page 页码 + 章节 + 仲裁字段）
@@ -697,7 +705,8 @@ async def chat(
             citations.append(citation)
 
         # 7. 反思校验（LLM 蕴含裁判，校验 LLM 实际看到的上下文）
-        reflection = await llm_entailment_check(question, answer, context_docs)
+        #    用改写后的独立问句做校验，避免裁判被"它/这些"等指代干扰
+        reflection = await llm_entailment_check(search_query, answer, context_docs)
 
         log_entry = {
             "attempt": attempt,

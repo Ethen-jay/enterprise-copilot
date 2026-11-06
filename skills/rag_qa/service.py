@@ -17,7 +17,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from common.auth import current_user
-from skills.rag_qa import rag_engine
+from common import chat_memory
+from common.chat_memory import session_header
+from skills.rag_qa import llm_client, rag_engine
 from skills.rag_qa.config import ASYNC_THRESHOLD_MB, LOW_PRIORITY_MB
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -157,6 +159,11 @@ class ChatResponse(BaseModel):
     answer: str
     citations: list
     reflection: dict = {}
+    # 会话记忆：本轮是否走元问题通道、本会话已记住多少轮、检索实际使用的改写问句
+    from_memory: bool = False
+    memory_turns: int = 0
+    rewritten_question: str = ""
+    used_memory: bool = False
 
 
 def _validate_chat_request(req: ChatRequest) -> None:
@@ -847,19 +854,68 @@ def delete_document(source: str, user: str = Depends(current_user)):
     return DocumentDeleteResponse(source=source, deleted_chunks=deleted, status="ok")
 
 
+@router.get("/session")
+def session_info(user: str = Depends(current_user), session_id: Optional[str] = Depends(session_header)):
+    """查询当前会话的 RAG 记忆概况（前端显示"已记住 N 轮"）。"""
+    return chat_memory.stats(user, session_id, "rag")
+
+
+@router.delete("/session")
+def session_clear(user: str = Depends(current_user), session_id: Optional[str] = Depends(session_header)):
+    """清空当前会话的 RAG 记忆：清空后本轮起的问答回到新会话行为。"""
+    cleared = chat_memory.clear(user, session_id, "rag")
+    logger.info("清空 RAG 会话记忆: user=%s, cleared=%d", user, cleared)
+    return {"ok": True, "cleared": cleared}
+
+
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, user: str = Depends(current_user)):
-    """问答：在该用户专属知识库内检索 Top-K → 拼 Prompt → 调 LLM。"""
+async def chat(
+    req: ChatRequest,
+    user: str = Depends(current_user),
+    session_id: Optional[str] = Depends(session_header),
+):
+    """问答：在该用户专属知识库内检索 Top-K → 拼 Prompt → 调 LLM。
+
+    会话记忆（X-Session-Id）：服务端保存最近轮次；追问先做指代消解再检索，
+    元问题（"我上一句问了什么"）直接基于会话记忆回答。答案事实依据仍只来自文档。
+    """
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
     _validate_chat_request(req)
 
+    turns = chat_memory.get_turns(user, session_id, "rag")
+
+    # 元问题通道：不检索、不走反思，直接基于会话记忆回答
+    if chat_memory.is_meta_question(req.question):
+        text, _ = chat_memory.meta_answer(req.question, turns)
+        return ChatResponse(
+            answer=text,
+            citations=[],
+            reflection={"passed": True, "from_memory": True},
+            from_memory=True,
+            memory_turns=len(turns),
+        )
+
+    history = req.history if req.history else chat_memory.get_history(user, session_id, "rag")
+    rewritten = req.question
+    if turns and chat_memory.needs_rewrite(req.question):
+        rewritten = await llm_client.condense_query(req.question, turns)
+
     try:
-        result = await rag_engine.chat(req.question, history=req.history, user=user)
+        result = await rag_engine.chat(
+            req.question, history=history, user=user, retrieval_query=rewritten
+        )
+        memory_turns = chat_memory.append_turn(
+            user, session_id, "rag", req.question, result["answer"],
+            {"rewritten": rewritten},
+        )
         return ChatResponse(
             answer=result["answer"],
             citations=result["citations"],
             reflection=result.get("reflection", {}),
+            memory_turns=memory_turns,
+            rewritten_question=rewritten if rewritten != req.question else "",
+            used_memory=bool(turns) and rewritten != req.question,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -869,14 +925,20 @@ async def chat(req: ChatRequest, user: str = Depends(current_user)):
 
 
 @router.post("/chat/stream")
-async def chat_stream(req: ChatRequest, user: str = Depends(current_user)):
+async def chat_stream(
+    req: ChatRequest,
+    user: str = Depends(current_user),
+    session_id: Optional[str] = Depends(session_header),
+):
     """问答 SSE 状态进度流：检索中 → 重排中 → 生成中，最后 final 返回完整 ChatResponse。
 
-    与 /ingest/stream 同为 event-stream 形态；/chat 的 JSON 行为保持不变。
+    与 /chat 共用同一套会话记忆：追问先改写再检索，元问题直接走记忆通道。
     """
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
     _validate_chat_request(req)
+
+    turns = chat_memory.get_turns(user, session_id, "rag")
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -884,12 +946,33 @@ async def chat_stream(req: ChatRequest, user: str = Depends(current_user)):
         queue.put_nowait(evt)
 
     async def event_generator():
+        # 元问题：不检索，直接基于会话记忆返回
+        if chat_memory.is_meta_question(req.question):
+            text, _ = chat_memory.meta_answer(req.question, turns)
+            payload = ChatResponse(
+                answer=text,
+                citations=[],
+                reflection={"passed": True, "from_memory": True},
+                from_memory=True,
+                memory_turns=len(turns),
+            )
+            yield _sse("final", payload.model_dump())
+            return
+
         # 先推首条状态再启动任务：检索是同步阻塞调用，先让用户看到"正在检索"
         last = {"stage": "retrieving", "message": "正在检索知识库…"}
         yield _sse("status", last)
 
+        history = req.history if req.history else chat_memory.get_history(user, session_id, "rag")
+        rewritten = req.question
+        if turns and chat_memory.needs_rewrite(req.question):
+            rewritten = await llm_client.condense_query(req.question, turns)
+
         task = asyncio.create_task(
-            rag_engine.chat(req.question, history=req.history, user=user, progress_cb=progress_cb)
+            rag_engine.chat(
+                req.question, history=history, user=user,
+                progress_cb=progress_cb, retrieval_query=rewritten,
+            )
         )
         getter: Optional[asyncio.Task] = None
         try:
@@ -922,10 +1005,17 @@ async def chat_stream(req: ChatRequest, user: str = Depends(current_user)):
                 logger.exception("问答失败")
                 yield _sse("error", {"stage": "error", "error": "问答失败，请稍后重试（已记录日志）"})
             else:
+                memory_turns = chat_memory.append_turn(
+                    user, session_id, "rag", req.question, result["answer"],
+                    {"rewritten": rewritten},
+                )
                 payload = ChatResponse(
                     answer=result["answer"],
                     citations=result["citations"],
                     reflection=result.get("reflection", {}),
+                    memory_turns=memory_turns,
+                    rewritten_question=rewritten if rewritten != req.question else "",
+                    used_memory=bool(turns) and rewritten != req.question,
                 )
                 yield _sse("final", payload.model_dump())
         finally:

@@ -16,6 +16,7 @@ llm_client.py —— Text-to-SQL 大模型客户端（阶段 C 建，阶段 D �
     python -m app.llm_client "当前在制工单有多少"
 """
 
+import logging
 import re
 import sys
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ from typing import Optional
 from common.llm_openai import create_openai_client
 from .config import get_llm_settings
 from .anchor import get_anchor_date, get_snapshot_date
+
+logger = logging.getLogger("text2sql.llm")
 
 # ----------------------------------------------------------------------
 # 系统提示词：把“怎么当一个 Text-to-SQL 生成器”一次性说清楚
@@ -116,6 +119,29 @@ def _call_llm(settings, system: str, user_content: str) -> str:
         # openai 库的各类异常统一收口，避免把堆栈直接抛给网页
         raise LLMError("调用模型失败（%s）：%s" % (settings.model, e)) from e
     return resp.choices[0].message.content or ""
+
+
+def rewrite_question(question: str, turns: list) -> str:
+    """用最近几轮把"再按部门分组""只看上个月"等追问改写成独立问句。
+
+    只用于生成新 SQL 的输入，不改写结果、不绕过守卫；失败/超时回退原问题。
+    """
+    from common import chat_memory
+
+    prompt = chat_memory.build_condense_prompt(question, turns, "sql")
+    try:
+        raw = _call_llm(
+            get_llm_settings(),
+            "你是问句改写器，只输出一句独立问句，不解释、不补充任何事实。",
+            prompt,
+        )
+        rewritten = chat_memory.sanitize_rewrite(raw, question)
+        if rewritten != question:
+            logger.info("Text2SQL 追问改写生效（长度 %d → %d）", len(question), len(rewritten))
+        return rewritten
+    except Exception as e:
+        logger.warning("Text2SQL 追问改写失败，回退原问题: %s", e)
+        return question
 
 
 def _parse_result(raw_text: str, model: str) -> LLMResult:

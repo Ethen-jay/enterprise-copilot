@@ -8,11 +8,14 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from common.auth import current_user
+from common import chat_memory
+from common.chat_memory import session_header
 from skills.doc_agent import engine
 from skills.doc_agent.config import OUTPUT_DIR
 
@@ -61,6 +64,66 @@ class ConvertResponse(BaseModel):
     error: str = ""
     retry_count: int = 0
     reflection_log: list = []
+    # 会话记忆：是否沿用了上文的文件、提示文案、本会话已记住多少轮
+    used_memory: bool = False
+    memory_hint: str = ""
+    memory_turns: int = 0
+    message: str = ""
+
+
+# ----------------------------------------------------------------------
+# 会话记忆（文档转换）：记住最近一次文件、目标格式、产物文件名
+# ----------------------------------------------------------------------
+_DOC_META_PATTERNS = [
+    re.compile(r"(上(次|一次)|刚才|刚刚|前面|上一次).{0,12}(转|转换|导出).{0,12}(什么|哪个|哪些|啥)"),
+    re.compile(r"(上(次|一次)|刚才|刚刚|上一次).{0,6}(文件|产物|格式|结果).{0,8}(是什么|是哪个|什么|哪个)"),
+    re.compile(r"(刚才|上一次|上次).{0,6}那个文件.{0,8}(叫什么|是什么|哪)"),
+]
+
+
+def _is_doc_meta(instruction: str) -> bool:
+    text = (instruction or "").strip()
+    if not text or len(text) > 80:
+        return False
+    return any(p.search(text) for p in _DOC_META_PATTERNS)
+
+
+def _doc_meta_answer(user: str, session_id: Optional[str]) -> str:
+    """回答"上一次转出来的是什么格式/哪个文件"，来源标注为对话记忆。"""
+    turns = chat_memory.get_turns(user, session_id, "doc")
+    if not turns:
+        return "（来自对话记忆）当前会话还没有转换记录，请先上传一个文件。"
+    last = turns[-1]
+    extra = last.get("extra") or {}
+    return (
+        "（来自对话记忆）上一次转换使用的是「%s」，目标格式 %s，产物文件名 %s。"
+        % (
+            extra.get("filename", "未知文件"),
+            extra.get("target_format", "未知"),
+            extra.get("output_filename", "未知"),
+        )
+    )
+
+
+def _remember_conversion(user: str, session_id: Optional[str], content: bytes,
+                         filename: str, instruction: str, result: dict) -> int:
+    """转换成功后写入会话记忆：文件字节（供"再把它转成…"复用）+ 轮次摘要。"""
+    if not session_id:
+        return 0
+    plan = result.get("plan") or {}
+    src = plan.get("source_format", "")
+    tgt = plan.get("target_format", "")
+    out = result.get("output_filename", "")
+    chat_memory.store_blob(
+        user, session_id, "doc", filename, content,
+        {"target_format": tgt, "output_filename": out, "instruction": instruction},
+    )
+    return chat_memory.append_turn(
+        user, session_id, "doc", instruction,
+        "转换成功：%s（%s → %s），产物 %s" % (filename, src, tgt, out),
+        {"filename": filename, "source_format": src, "target_format": tgt,
+         "output_filename": out},
+    )
 
 
 # ----------------------------------------------------------------------
@@ -85,7 +148,8 @@ class DocTaskStatusResponse(BaseModel):
     error: str = ""
 
 
-async def _run_doc_task(task_id: str, content: bytes, filename: str, instruction: str):
+async def _run_doc_task(task_id: str, content: bytes, filename: str, instruction: str,
+                        user: str = "", session_id: Optional[str] = None):
     """后台工作协程：转换是 CPU 密集（PDF/DOCX 解析），放线程池避免卡住轮询接口。"""
     info = DOC_TASKS[task_id]
     try:
@@ -93,6 +157,12 @@ async def _run_doc_task(task_id: str, content: bytes, filename: str, instruction
         info["result"] = result
         if result.get("status") == "ok":
             info["status"] = "completed"
+            # 成功后才写入会话记忆：后续可直接说"再把它转成 PDF"
+            info["memory_turns"] = _remember_conversion(
+                user, session_id, content, filename, instruction, result
+            )
+            result["memory_hint"] = "已记住本次转换，可直接说「再把它转成 …」"
+            result["memory_turns"] = info["memory_turns"]
         else:
             info["status"] = "error"
             info["error"] = result.get("error", "转换失败")
@@ -104,7 +174,12 @@ async def _run_doc_task(task_id: str, content: bytes, filename: str, instruction
 
 
 @router.post("/convert/async", response_model=ConvertAsyncResponse)
-async def convert_async(file: UploadFile = File(...), instruction: str = Form(...)):
+async def convert_async(
+    file: UploadFile = File(...),
+    instruction: str = Form(...),
+    user: str = Depends(current_user),
+    session_id: Optional[str] = Depends(session_header),
+):
     """提交异步转换任务：校验后立即返回 task_id，转换在后台执行，进度轮询 /tasks/{task_id}。"""
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名为空")
@@ -127,17 +202,23 @@ async def convert_async(file: UploadFile = File(...), instruction: str = Form(..
         "filename": file.filename,
         "result": None,
         "error": "",
+        "user": user,
     }
-    asyncio.create_task(_run_doc_task(task_id, content, file.filename, instruction))
+    asyncio.create_task(
+        _run_doc_task(task_id, content, file.filename, instruction, user, session_id)
+    )
     logger.info("异步转换受理: task=%s, file=%s, instruction=%s", task_id, file.filename, instruction)
     return ConvertAsyncResponse(task_id=task_id, status="processing", filename=file.filename)
 
 
 @router.get("/tasks/{task_id}", response_model=DocTaskStatusResponse)
-def get_doc_task(task_id: str):
-    """查询异步转换任务状态（前端 1 秒轮询）。"""
+def get_doc_task(task_id: str, user: str = Depends(current_user)):
+    """查询异步转换任务状态（前端 1 秒轮询）。
+
+    任务按用户隔离：跨用户访问返回 404（不暴露任务是否存在）。
+    """
     info = DOC_TASKS.get(task_id)
-    if not info:
+    if not info or info.get("user") != user:
         raise HTTPException(status_code=404, detail="任务不存在或已过期（任务表在内存中，服务重启即清空）")
     return DocTaskStatusResponse(**info)
 
@@ -151,8 +232,10 @@ def health():
 async def convert(
     file: UploadFile = File(...),
     instruction: str = Form(...),
+    user: str = Depends(current_user),
+    session_id: Optional[str] = Depends(session_header),
 ):
-    """上传文档 + 自然语言指令，执行转换。"""
+    """上传文档 + 自然语言指令，执行转换；成功后写入会话记忆。"""
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名为空")
 
@@ -180,6 +263,9 @@ async def convert(
             retry_count=result.get("retry_count", 0),
         )
 
+    memory_turns = _remember_conversion(
+        user, session_id, content, file.filename, instruction, result
+    )
     logger.info(
         "转换成功: %s → %s, validation=%s, 重试次数=%d",
         result["plan"]["source_format"],
@@ -193,7 +279,101 @@ async def convert(
         output_filename=result["output_filename"],
         validation=result["validation"],
         retry_count=result.get("retry_count", 0),
+        memory_hint=("已记住本次转换，可直接说「再把它转成 …」" if session_id else ""),
+        memory_turns=memory_turns,
     )
+
+
+@router.post("/convert/followup", response_model=ConvertResponse)
+async def convert_followup(
+    instruction: str = Form(...),
+    user: str = Depends(current_user),
+    session_id: Optional[str] = Depends(session_header),
+):
+    """指代型转换指令：不用重复上传文件，沿用本会话最近一次的文件。
+
+    支持：
+      - "再把它转成 PDF"（沿用上一次文件与内容）
+      - "上一次转出来的是什么格式"（直接基于会话记忆回答，不执行转换）
+    无法确定文件时不猜测，返回明确提示，要求先上传。
+    """
+    text = (instruction or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="指令不能为空")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="缺少 X-Session-Id，无法使用会话记忆；请刷新页面后重试")
+
+    # 元问题：直接回答，不跑转换
+    if _is_doc_meta(text):
+        turns = chat_memory.get_turns(user, session_id, "doc")
+        return ConvertResponse(
+            status="ok",
+            plan={},
+            message=_doc_meta_answer(user, session_id),
+            used_memory=True,
+            memory_turns=len(turns),
+        )
+
+    blob = chat_memory.get_blob(user, session_id, "doc")
+    if not blob:
+        raise HTTPException(
+            status_code=400,
+            detail="当前会话还没有可沿用的文件：请先上传一次，或把文件名说完整。",
+        )
+
+    filename = blob["filename"]
+    content = blob["content"]
+    logger.info("沿用会话文件转换: file=%s, instruction=%s", filename, text)
+
+    result = await asyncio.to_thread(engine.convert, content, filename, text)
+
+    if result["status"] == "error":
+        return ConvertResponse(
+            status="error",
+            plan=result["plan"],
+            error=result.get("error", ""),
+            retry_count=result.get("retry_count", 0),
+            used_memory=True,
+            memory_hint="本次沿用了上文的文件：%s" % filename,
+        )
+
+    memory_turns = _remember_conversion(user, session_id, content, filename, text, result)
+    plan = result["plan"]
+    return ConvertResponse(
+        status="ok",
+        plan=plan,
+        output_filename=result["output_filename"],
+        validation=result["validation"],
+        retry_count=result.get("retry_count", 0),
+        used_memory=True,
+        memory_hint="本次沿用了上文的文件：%s（%s → %s）" % (
+            filename, plan.get("source_format", ""), plan.get("target_format", "")),
+        memory_turns=memory_turns,
+    )
+
+
+@router.get("/session")
+def doc_session_info(user: str = Depends(current_user),
+                     session_id: Optional[str] = Depends(session_header)):
+    """查询文档转换会话记忆：轮数 + 最近一次文件信息（不返回文件内容）。"""
+    info = chat_memory.stats(user, session_id, "doc")
+    blob = chat_memory.get_blob(user, session_id, "doc")
+    if blob:
+        meta = blob.get("meta") or {}
+        info.update({
+            "last_filename": blob.get("filename", ""),
+            "target_format": meta.get("target_format", ""),
+            "output_filename": meta.get("output_filename", ""),
+        })
+    return info
+
+
+@router.delete("/session")
+def doc_session_clear(user: str = Depends(current_user),
+                      session_id: Optional[str] = Depends(session_header)):
+    """清空文档转换会话记忆（轮次 + 上次文件缓存）。"""
+    cleared = chat_memory.clear(user, session_id, "doc")
+    return {"ok": True, "cleared": cleared}
 
 
 @router.get("/download/{filename}")
