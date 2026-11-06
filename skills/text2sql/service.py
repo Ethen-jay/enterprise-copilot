@@ -23,11 +23,12 @@ main.py —— FastAPI 服务入口（阶段 D）
 
 import asyncio
 import json
+import logging
 import re
 import sqlite3
 from typing import Callable, List, Optional
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -38,6 +39,12 @@ from .schema_linker import build_context, log_link
 from .llm_client import generate_sql, regenerate_sql, LLMError
 from .sql_guard import check_sql
 from .executor import execute_select, ReadonlyExecError
+
+logger = logging.getLogger("text2sql")
+
+# 入参上限：问题/澄清补充过长会把 prompt 撑爆（延迟与费用不可控）
+MAX_QUESTION_CHARS = 2000
+MAX_CLARIFICATION_CHARS = 2000
 
 
 # ----------------------------------------------------------------------
@@ -95,6 +102,24 @@ class AskResponse(BaseModel):
     clarify: Optional[str] = None  # 模型要求补充信息时的澄清问题（不执行 SQL）
 
 
+def _validate_ask(req: AskRequest) -> None:
+    """校验入参：问题非空且 ≤2000 字，澄清补充 ≤2000 字。"""
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="问题不能为空")
+    if len(req.question) > MAX_QUESTION_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail="问题过长（%d 字），上限 %d 字，请精简后重试"
+                   % (len(req.question), MAX_QUESTION_CHARS),
+        )
+    if len(req.clarification or "") > MAX_CLARIFICATION_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail="补充信息过长（%d 字），上限 %d 字"
+                   % (len(req.clarification), MAX_CLARIFICATION_CHARS),
+        )
+
+
 # ----------------------------------------------------------------------
 # 健康检查：页面加载前可用来判断配置是否齐全
 # ----------------------------------------------------------------------
@@ -141,6 +166,7 @@ def health():
 @router.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
     """自然语言 → SQL → 结果（JSON）。行为与改造前一致。"""
+    _validate_ask(req)
     return _ask_pipeline(req)
 
 
@@ -170,8 +196,8 @@ def _ask_pipeline(
         resp.warnings = link.warnings
         schema_context = link.context_text
     except Exception as e:  # 语义层文件缺失等，打日志后继续
-        print("[SchemaLinking] 组装上下文失败：%s" % e)
-        resp.warnings.append("Schema 上下文组装失败：%s" % e)
+        logger.exception("Schema 上下文组装失败")
+        resp.warnings.append("Schema 上下文组装失败，已按全量表清单继续尝试（详情见服务日志）")
         schema_context = ""
 
     # 2) 调大模型生成 SQL（可能是多轮：携带用户对上一轮 CLARIFY 的补充）
@@ -216,8 +242,9 @@ def _ask_pipeline(
     try:
         result = execute_select(guarded.sql)
     except ReadonlyExecError as first_err:
-        print("[Ask] SQL 执行失败，自动修复重试：%s" % first_err)
+        logger.warning("SQL 执行失败，自动修复重试：%s", first_err)
         emit("repairing", "执行失败，正在把报错回喂模型自动修复…")
+        first_msg = sanitize_sql_error(str(first_err))
         try:
             fix = regenerate_sql(question, schema_context, guarded.sql,
                                  sanitize_sql_error(str(first_err)),
@@ -225,26 +252,26 @@ def _ask_pipeline(
                                  snapshot_date=get_snapshot_date())
         except LLMError as e:
             emit("error", "自动修复时调用模型失败：%s" % e)
-            resp.error = "%s（自动修复时调用模型失败：%s）" % (first_err, e)
+            resp.error = "%s（自动修复时调用模型失败：%s）" % (first_msg, e)
             return resp
         # 模型判断问题本身答不了
         if fix.refusal:
             emit("no_sql", "模型判断该问题无法用数据回答")
-            resp.error = "%s（自动修复：%s）" % (first_err, fix.refusal)
+            resp.error = "%s（自动修复：%s）" % (first_msg, fix.refusal)
             return resp
         # 修正版仍须过只读守卫，杜绝修复环节引入写操作
         emit("guarding", "修正版 SQL 已生成，正在重新做只读守卫校验…")
         g2 = check_sql(fix.sql)
         if not g2.ok:
             emit("guard_rejected", "修正版 SQL 未通过只读守卫：%s" % g2.reason)
-            resp.error = "%s（修正版 SQL 未通过只读守卫：%s）" % (first_err, g2.reason)
+            resp.error = "%s（修正版 SQL 未通过只读守卫：%s）" % (first_msg, g2.reason)
             return resp
         emit("executing", "修正版 SQL 守卫通过，正在重新执行查询…")
         try:
             result = execute_select(g2.sql)
         except ReadonlyExecError as e2:
             emit("error", "已自动修正重试仍失败：%s" % e2)
-            resp.error = "%s；已自动修正重试仍失败：%s" % (first_err, e2)
+            resp.error = "%s；已自动修正重试仍失败：%s" % (first_msg, sanitize_sql_error(str(e2)))
             return resp
         # 修复成功：回显修正后的 SQL 与口径，并提示用户
         resp.sql = g2.sql
@@ -269,6 +296,7 @@ async def ask_stream(req: AskRequest):
 
     结果表格是结构化数据，整体在 final 一次性返回；/ask 的 JSON 行为保持不变。
     """
+    _validate_ask(req)
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -300,9 +328,9 @@ async def ask_stream(req: AskRequest):
 
             try:
                 resp = task.result()
-            except Exception as e:
-                print("[Ask] 流式问答异常：%s" % e)
-                yield _sse("error", {"stage": "error", "error": "问答失败: %s" % e})
+            except Exception:
+                logger.exception("Text2SQL 流式问答异常")
+                yield _sse("error", {"stage": "error", "error": "问答失败，请稍后重试（已记录日志）"})
             else:
                 yield _sse("final", resp.model_dump())
         finally:

@@ -16,6 +16,7 @@ schema_linker -> llm_client -> sql_guard -> executor 串起来。
 
 import sqlite3
 import sys
+import time
 from typing import Dict, List
 
 from .config import DB_PATH
@@ -24,6 +25,8 @@ from .config import DB_PATH
 QUERY_TIMEOUT_MS = 10_000
 # 网页/接口最多返回的行数（明细查询 sql_guard 已补 LIMIT 100，这里再兜一道）
 MAX_RETURN_ROWS = 1000
+# 超时检查粒度：SQLite 每执行约 N 条虚拟机指令回调一次（过小有额外开销）
+_PROGRESS_STEPS = 10_000
 
 
 class ReadonlyExecError(Exception):
@@ -58,6 +61,12 @@ def execute_select(sql: str) -> Dict[str, object]:
     """
     con = open_readonly_connection()
     try:
+        # 真·执行超时：connect(timeout=) 只控制等锁，拦不住笛卡尔积这类慢查询；
+        # progress_handler 在 SQLite 虚拟机内定期回调，超时返回非 0 即中断执行。
+        deadline = time.monotonic() + QUERY_TIMEOUT_MS / 1000.0
+        con.set_progress_handler(
+            lambda: 1 if time.monotonic() > deadline else 0, _PROGRESS_STEPS
+        )
         cursor = con.execute(sql)
         columns = [d[0] for d in cursor.description] if cursor.description else []
         raw_rows = cursor.fetchmany(MAX_RETURN_ROWS + 1)
@@ -72,8 +81,15 @@ def execute_select(sql: str) -> Dict[str, object]:
             "row_count": len(rows),
             "truncated": truncated,
         }
-    except sqlite3.Error as e:
+    except sqlite3.OperationalError as e:
+        if "interrupt" in str(e).lower():
+            raise ReadonlyExecError(
+                "查询超时（超过 %d 秒），请缩小时间范围或增加过滤条件"
+                % (QUERY_TIMEOUT_MS // 1000)
+            ) from e
         # 例如 no such column、syntax error —— 原文对排查很有用，直接带上
+        raise ReadonlyExecError("SQL 执行失败：%s" % e) from e
+    except sqlite3.Error as e:
         raise ReadonlyExecError("SQL 执行失败：%s" % e) from e
     finally:
         con.close()

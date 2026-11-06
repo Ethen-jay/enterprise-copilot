@@ -6,12 +6,14 @@ gateway/middleware.py —— 网关企业化基础能力（F2）
 一处挂载同时提供四件事：
   1. Trace ID：为每个请求生成/透传 X-Request-ID，响应原样带回，便于串起日志与排查；
   2. 审计日志：请求结束时打一条结构化 JSON（谁 / 何时 / 做了哪个动作 / 耗时 / 状态码 / 来源 IP）；
-  3. 认证（可选）：配置 GATEWAY_API_KEY（逗号分隔支持多 key）后，非白名单路径须携带
-     X-API-Key 或 Authorization: Bearer（时序安全比较），否则 401；留空则完全跳过认证；
+  3. 认证：非白名单路径必须携带登录签发的 Authorization: Bearer <JWT>，
+     校验通过后把 claims.sub 写入 scope["state"]["user"]（业务层只认这个身份）；
+     服务间调用可改用 X-API-Key，映射到固定服务账号，不能冒充任意用户；
+     未认证一律 401，不存在"缺少身份头回退 default"；
   4. 简单限流：对写操作（POST/PUT/DELETE）按来源 IP 做固定窗口计数，超限返回 429。
 
-说明：这里的限流与认证都是内存级的最小实现，单进程、重启即清空，
-仅用于 PoC 演示“网关承担限流/认证”的能力，生产需换 Redis / 网关组件 + 正式鉴权体系。
+说明：限流是内存级的最小实现，单进程、重启即清空；认证的签名密钥
+来自 AUTH_JWT_SECRET（见 common/auth.py）。
 """
 
 import hmac
@@ -21,12 +23,14 @@ import time
 import uuid
 from collections import defaultdict, deque
 
+from common.auth import SERVICE_ACCOUNT, decode_token
 from common.config import GATEWAY_API_KEYS
 
 logger = logging.getLogger("gateway.audit")
 
-# 认证白名单：这些路径无需 API Key（登录页 / 健康检查 / 接口文档）
+# 认证白名单：这些路径无需令牌（登录页 / 健康检查 / 接口文档 / 静态资源）
 _PUBLIC_PATHS = {"/", "/health", "/api/health", "/docs", "/openapi.json", "/redoc", "/login"}
+_PUBLIC_PREFIXES = ("/static/", "/favicon")
 
 # 限流配置：窗口 60 秒内，同一 IP 最多发起 RATE_LIMIT_MAX 次写操作
 RATE_LIMIT_WINDOW = 60.0
@@ -60,28 +64,44 @@ def _rate_limited(scope: dict) -> bool:
     return False
 
 
-def _extract_api_key(scope: dict) -> str:
-    """从 X-API-Key 或 Authorization: Bearer 提取密钥；无则返回空串。"""
+def _is_public(scope: dict) -> bool:
+    """白名单路径（登录/健康检查/文档/静态资源）与 CORS 预检无需令牌。"""
+    if scope.get("method") == "OPTIONS":
+        return True
+    path = scope.get("path", "")
+    if path in _PUBLIC_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in _PUBLIC_PREFIXES)
+
+
+def _authenticate(scope: dict) -> tuple[str, str]:
+    """校验凭据并派生身份，返回 (user, auth_type)。
+
+    - Authorization: Bearer <JWT> → claims.sub（用户令牌）
+    - X-API-Key（配置了 GATEWAY_API_KEYS 时）→ 固定服务账号（服务间调用）
+    认证失败返回 ("", "")。客户端传来的 X-User 一律忽略。
+    """
+    token = ""
+    api_key = ""
     for name, value in scope.get("headers", []):
-        if name == b"x-api-key":
-            return value.decode("latin-1")
         if name == b"authorization":
             v = value.decode("latin-1")
             if v.lower().startswith("bearer "):
-                return v[7:].strip()
-    return ""
+                token = v[7:].strip()
+        elif name == b"x-api-key":
+            api_key = value.decode("latin-1")
+    # 注意：不再把 Bearer 当作 API Key 兜底，两种凭据通道互相隔离
 
+    if token:
+        claims = decode_token(token)
+        sub = str((claims or {}).get("sub", ""))
+        if sub:
+            return sub, "token"
 
-def _unauthorized(scope: dict) -> bool:
-    """认证检查：未启用时放行；启用后非白名单路径须携带正确密钥（多 key，时序安全比较）。"""
-    if not GATEWAY_API_KEYS:
-        return False
-    if scope.get("path", "") in _PUBLIC_PATHS:
-        return False
-    provided = _extract_api_key(scope)
-    if not provided:
-        return True  # 缺少密钥
-    return not any(hmac.compare_digest(provided, valid) for valid in GATEWAY_API_KEYS)
+    if api_key and any(hmac.compare_digest(api_key, k) for k in GATEWAY_API_KEYS):
+        return SERVICE_ACCOUNT, "api_key"
+
+    return "", ""
 
 
 class GatewayMiddleware:
@@ -107,10 +127,18 @@ class GatewayMiddleware:
         # 请求级状态：把 request_id 放进 scope["state"]，下游（异常处理器等）可读取回显
         scope.setdefault("state", {})["request_id"] = request_id
 
-        # 认证：未配置 GATEWAY_API_KEY 时恒放行；配置后非白名单路径须带 X-API-Key
-        if _unauthorized(scope):
-            await self._send_401(send, request_id, scope)
-            return
+        # 认证：非白名单路径必须带合法令牌或服务 API Key，否则 401
+        state = scope.setdefault("state", {})
+        if not _is_public(scope):
+            user, auth_type = _authenticate(scope)
+            if not user:
+                await self._send_401(send, request_id, scope)
+                return
+            state["user"] = user
+            state["auth_type"] = auth_type
+        else:
+            state["user"] = ""
+            state["auth_type"] = "public"
 
         # 写操作限流：命中直接回 429，不进入下游
         if _rate_limited(scope):
@@ -146,6 +174,8 @@ class GatewayMiddleware:
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "request_id": request_id,
                 "client_ip": _client_ip(scope),
+                "user": state.get("user", ""),
+                "auth_type": state.get("auth_type", ""),
                 "method": method,
                 "path": path,
                 "status": status_holder["status"],
@@ -154,7 +184,7 @@ class GatewayMiddleware:
 
     async def _send_401(self, send, request_id: str, scope: dict):
         body = json.dumps(
-            {"code": 401, "detail": "未认证：请携带 X-API-Key 或 Authorization: Bearer", "request_id": request_id},
+            {"code": 401, "detail": "未认证：请先登录获取访问令牌", "request_id": request_id},
             ensure_ascii=False,
         ).encode("utf-8")
         await send({

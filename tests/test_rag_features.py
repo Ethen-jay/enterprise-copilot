@@ -4,6 +4,7 @@
 阈值拒答判断、上下文仲裁标注、Prompt Injection 检测、重试可重试性判断。
 """
 
+import pytest
 from langchain_core.documents import Document
 
 from skills.rag_qa import rag_engine
@@ -76,9 +77,10 @@ def test_parent_id_for():
 
 
 def test_normalize_user():
-    """用户名：空回 default；合法字符通过；非法抛 ValueError。"""
-    assert normalize_user(None) == "default"
-    assert normalize_user("  ") == "default"
+    """用户名：空值报错（身份必须显式）；合法字符通过；非法抛 ValueError。"""
+    for empty in (None, "", "  "):
+        with pytest.raises(ValueError):
+            normalize_user(empty)  # 身份必须显式给出，不再回退 default
     assert normalize_user("alice") == "alice"
     assert normalize_user("user_01-X") == "user_01-X"
     for bad in ("bad user", "张三", "a" * 33, "x;drop", "a/b"):
@@ -167,20 +169,29 @@ def test_is_retryable():
     assert not is_retryable(ValueError("普通异常"))
 
 
-def test_bm25_child_only_in_parent_child_mode():
-    """BM25 索引源：父子分块模式下 get_all_documents 支持 chunk_type 过滤参数。"""
-    # 仅验证过滤参数被接受（不连库：get_all_documents 失败时返回 []，不抛错）
+def test_bm25_cache_invalidated_by_write_version():
+    """BM25 缓存按写版本号失效：块数不变但内容被替换时也必须重建。"""
     from unittest.mock import MagicMock
-    store = rag_engine.get_store.__wrapped__ if hasattr(rag_engine.get_store, "__wrapped__") else None
-    # 直接构造 mock store 验证 _get_bm25 对空库的健壮性
+
     fake_store = MagicMock()
-    fake_store.count.return_value = 0
-    fake_store.get_all_documents.return_value = []
+    fake_store.count.return_value = 1
+    fake_store.write_version = 1
+    fake_store.get_all_documents.return_value = [Document(page_content="旧内容")]
+
     saved = rag_engine._stores.get("bm25_unit_test")
     rag_engine._stores["bm25_unit_test"] = fake_store
     try:
-        assert rag_engine._get_bm25("bm25_unit_test") is None, "空库应返回 None"
+        first = rag_engine._get_bm25("bm25_unit_test")
+        assert [d.page_content for d in first[1]] == ["旧内容"]
+        assert fake_store.get_all_documents.call_args.kwargs.get("exclude_parent") is True
+
+        # 同名替换：块数不变、写版本 +1、内容已变
+        fake_store.write_version = 2
+        fake_store.get_all_documents.return_value = [Document(page_content="新内容")]
+        second = rag_engine._get_bm25("bm25_unit_test")
+        assert [d.page_content for d in second[1]] == ["新内容"], "写版本变化必须重建 BM25"
     finally:
+        rag_engine._bm25_cache.pop("bm25_unit_test", None)
         rag_engine._stores.pop("bm25_unit_test", None)
         if saved is not None:
             rag_engine._stores["bm25_unit_test"] = saved

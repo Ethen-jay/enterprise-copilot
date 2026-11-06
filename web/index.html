@@ -103,11 +103,27 @@
   .doc-manager-head { display: flex; align-items: center; justify-content: space-between;
                       margin-bottom: 8px; font-size: 13px; color: #334155; }
   .doc-list { display: flex; flex-direction: column; gap: 6px; }
-  .doc-item { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  .doc-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
               padding: 7px 11px; background: #fff; border: 1px solid var(--line);
               border-radius: 9px; font-size: 13px; }
-  .doc-item .doc-name { color: #1e293b; word-break: break-all; }
-  .doc-item .doc-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .doc-item .doc-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .doc-name-btn { padding: 0; border: 0; background: none; text-align: left; cursor: pointer;
+                  font-size: 13px; color: #1e293b; word-break: break-all; font-family: inherit; }
+  .doc-name-btn:hover { color: var(--brand); }
+  .doc-name-btn .caret { display: inline-block; width: 14px; color: var(--muted); }
+  .doc-meta-line { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .doc-chunks { margin: -2px 0 8px 12px; padding: 8px 11px; background: #fff;
+                border: 1px dashed #dbe3fd; border-radius: 9px; }
+  .chunk-item { padding: 7px 2px; border-bottom: 1px dashed #eef1f8; }
+  .chunk-item:last-child { border-bottom: 0; }
+  .chunk-item.hit { background: #fff7e0; border-radius: 6px; }
+  .chunk-head { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted);
+                margin-bottom: 3px; }
+  .chunk-head .chunk-no { color: var(--brand); font-weight: 600; }
+  .chunk-text { font-size: 12.5px; color: #334155; white-space: pre-wrap; word-break: break-word; }
+  .chunk-pager { display: flex; align-items: center; gap: 10px; margin-top: 8px;
+                 font-size: 12px; color: var(--muted); }
+  .chunk-pager button:disabled { opacity: .45; cursor: not-allowed; }
   .doc-del { padding: 3px 11px; font-size: 12px; color: #dc2626; background: #fff;
              border: 1px solid #fecaca; border-radius: 7px; cursor: pointer;
              white-space: nowrap; transition: all .15s ease; }
@@ -155,8 +171,11 @@
   .cite { font-size: 12px; color: var(--muted); margin-top: 12px; padding-top: 12px;
           border-top: 1px dashed var(--line); }
   .cite b { font-weight: 600; }
-  .cite span { display: inline-block; margin: 3px 6px 0 0; padding: 3px 10px;
-               background: #f3f5fb; border-radius: 8px; }
+  .cite span, .cite button { display: inline-block; margin: 3px 6px 0 0; padding: 3px 10px;
+               background: #f3f5fb; border: 0; border-radius: 8px; font-size: 12px;
+               color: var(--muted); font-family: inherit; }
+  .cite button { cursor: pointer; }
+  .cite button:hover { background: #e8eefc; color: var(--brand); }
   .file-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
   input[type=file] { font-size: 13px; color: var(--muted); }
   .file-row .hint { font-size: 13px; color: var(--muted); }
@@ -211,7 +230,7 @@
     <h2>一体化企业智能助手</h2>
     <p class="login-sub">登录后开始使用</p>
     <input id="loginAccount" type="text" placeholder="账号（字母/数字/下划线）" autocomplete="username">
-    <input id="loginKey" type="password" placeholder="访问密钥（认证启用时必填）" autocomplete="current-password">
+    <input id="loginKey" type="password" placeholder="登录密码（服务配置了密码时必填）" autocomplete="current-password">
     <button id="loginBtn" class="btn">登 录</button>
     <div id="loginMsg" class="login-msg"></div>
     <div id="loginHint" class="login-hint">正在检测服务状态…</div>
@@ -313,11 +332,35 @@
 "use strict";
 var $ = function (id) { return document.getElementById(id); };
 
-/* 网关 API Key（可选）：若 .env 配置了 GATEWAY_API_KEY，业务接口需携带 X-API-Key */
-function apiKey() { return localStorage.getItem("api_key") || ""; }
+/* 登录签发的访问令牌：受保护接口一律带 Authorization，服务端只认令牌里的身份 */
+function authToken() { return localStorage.getItem("token") || ""; }
+function authHeaders(extra) {
+  var h = extra || {};
+  var t = authToken();
+  if (t) h["Authorization"] = "Bearer " + t;
+  return h;
+}
+/* 401 统一处理：清空登录态并回到登录页（令牌过期/被吊销） */
+function expireSession() {
+  localStorage.removeItem("token");
+  localStorage.removeItem("account");
+  localStorage.removeItem("api_key");
+  showLogin();
+  $("loginMsg").textContent = "登录已过期，请重新登录";
+}
+function handleUnauthorized(r) {
+  if (r.status === 401) { expireSession(); throw new Error("登录已过期，请重新登录"); }
+  return r;
+}
+/* 统一响应处理：401 回登录页，非 2xx 抛错，2xx 解析 JSON */
+function ensureOk(r) {
+  handleUnauthorized(r);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
 
-/* 登录账号（知识库按账号隔离）：默认 default */
-function userId() { return localStorage.getItem("account") || "default"; }
+/* 登录账号（知识库按账号隔离，仅用于展示；身份以令牌为准） */
+function userId() { return localStorage.getItem("account") || ""; }
 
 function esc(s) {
   return String(s == null ? "" : s)
@@ -333,6 +376,7 @@ function loading(text) {
 function streamSSE(url, headers, body, on) {
   return fetch(url, { method: "POST", headers: headers, body: JSON.stringify(body) })
     .then(function (r) {
+      if (r.status === 401) expireSession();
       if (!r.ok) {
         return r.text().then(function (t) {
           var msg = "HTTP " + r.status;
@@ -501,7 +545,7 @@ function submitSql(q, clarification, isClarify) {
   $("sqlResult").innerHTML = loading("正在选择数据表…");
   var payload = { question: q };
   if (clarification) payload.clarification = clarification;
-  streamSSE("/ask/stream", { "Content-Type": "application/json", "X-API-Key": apiKey() }, payload, {
+  streamSSE("/ask/stream", authHeaders({ "Content-Type": "application/json" }), payload, {
     status: function (d) { $("sqlResult").innerHTML = loading(d.message || "处理中…"); },
     final: renderSql,
     error: function (msg) {
@@ -532,16 +576,23 @@ function renderRag(data) {
     if (data.citations && data.citations.length) {
       html += '<div class="cite"><b>引用</b>';
       data.citations.forEach(function (c) {
-        var label;
+        var label, file = "";
         if (typeof c === "string") { label = c; }
         else {
           label = c.file || c.source || "未知";
+          file = c.file || c.source || "";
           if (typeof c.page === "number") label += " · 第" + c.page + "页";
           if (c.heading) label += " · " + c.heading;
           if (c.doc_date) label += "（" + c.doc_date + "）";
           else if (c.doc_version) label += "（" + c.doc_version + "）";
         }
-        html += "<span>" + esc(label) + "</span>";
+        if (file) {
+          html += '<button class="cite-btn" type="button" data-file="' + esc(file) +
+                  '" data-chunk="' + (typeof c.chunk === "number" ? c.chunk : "") + '">' +
+                  esc(label) + "</button>";
+        } else {
+          html += "<span>" + esc(label) + "</span>";
+        }
       });
       html += "</div>";
     }
@@ -552,13 +603,19 @@ function renderRag(data) {
     }
   }
   $("ragResult").innerHTML = html || '<div class="card"><div class="empty">没有可展示的结果。</div></div>';
+  // 引用点击 → 在下方知识库文档面板展开对应分块并高亮
+  Array.prototype.forEach.call($("ragResult").querySelectorAll(".cite-btn"), function (b) {
+    b.addEventListener("click", function () {
+      openCitation(b.getAttribute("data-file"), b.getAttribute("data-chunk"));
+    });
+  });
 }
 function askRag() {
   var q = $("ragQ").value.trim(); if (!q) { $("ragQ").focus(); return; }
   pushHist("rag_history", q);
   var btn = $("ragBtn"); btn.disabled = true; btn.textContent = "问答中…";
   $("ragResult").innerHTML = loading("正在检索知识库…");
-  streamSSE("/rag/chat/stream", { "Content-Type": "application/json", "X-API-Key": apiKey(), "X-User": userId() }, { question: q, history: [] }, {
+  streamSSE("/rag/chat/stream", authHeaders({ "Content-Type": "application/json" }), { question: q, history: [] }, {
     status: function (d) { $("ragResult").innerHTML = loading(d.message || "处理中…"); },
     final: renderRag,
     error: function (msg) {
@@ -597,11 +654,12 @@ function doIngest(replace) {
   if (dv) fd.append("doc_version", dv);
   fetch("/rag/ingest", {
     method: "POST",
-    headers: { "X-API-Key": apiKey(), "X-User": userId() },
+    headers: authHeaders(),
     body: fd,
   })
     .then(function (r) {
-      if (r.status === 409 || r.status === 413 || r.status === 400) {
+      handleUnauthorized(r);
+      if (r.status === 409 || r.status === 413 || r.status === 400 || r.status === 422) {
         return r.json().then(function (e) { throw new Error(e.detail || ("HTTP " + r.status)); });
       }
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -645,11 +703,12 @@ function doIngestAsync(f, replace) {
   if (dv) fd.append("doc_version", dv);
   fetch("/rag/ingest/async", {
     method: "POST",
-    headers: { "X-API-Key": apiKey(), "X-User": userId() },
+    headers: authHeaders(),
     body: fd,
   })
     .then(function (r) {
-      if (r.status === 409 || r.status === 413 || r.status === 400) {
+      handleUnauthorized(r);
+      if (r.status === 409 || r.status === 413 || r.status === 400 || r.status === 422) {
         return r.json().then(function (e) { throw new Error(e.detail || ("HTTP " + r.status)); });
       }
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -669,8 +728,8 @@ function doIngestAsync(f, replace) {
     });
 }
 function pollAsyncTask(taskId, msg, btn) {
-  fetch("/rag/tasks/" + taskId, { headers: { "X-API-Key": apiKey(), "X-User": userId() } })
-    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  fetch("/rag/tasks/" + taskId, { headers: authHeaders() })
+    .then(ensureOk)
     .then(function (t) {
       if (t.status !== "completed") {
         var line = "处理中：" + stageText(t.stage || t.current);
@@ -709,8 +768,8 @@ function ingestRag() {
 
   // 第一步：先查重，同名则进入两步确认（避免大文件传完才报冲突）
   btn.disabled = true; btn.textContent = "检查中…"; msg.textContent = "";
-  fetch("/rag/documents", { headers: { "X-API-Key": apiKey(), "X-User": userId() } })
-    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  fetch("/rag/documents", { headers: authHeaders() })
+    .then(ensureOk)
     .then(function (d) {
       var exists = (d.documents || []).some(function (x) { return x.source === f.name; });
       if (exists) {
@@ -742,10 +801,11 @@ function startBatchIngest() {
 
   fetch("/rag/ingest/batch", {
     method: "POST",
-    headers: { "X-API-Key": apiKey(), "X-User": userId() },
+    headers: authHeaders(),
     body: fd,
   })
     .then(function (r) {
+      handleUnauthorized(r);
       if (r.status === 400) {
         return r.json().then(function (e) { throw new Error(e.detail || "HTTP 400"); });
       }
@@ -764,8 +824,8 @@ function startBatchIngest() {
 }
 
 function pollBatchTask(taskId, msg, btn, input) {
-  fetch("/rag/tasks/" + taskId, { headers: { "X-API-Key": apiKey(), "X-User": userId() } })
-    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  fetch("/rag/tasks/" + taskId, { headers: authHeaders() })
+    .then(ensureOk)
     .then(function (t) {
       var line = "进度 " + t.done + "/" + t.total;
       if (t.current) line += "，当前：" + t.current;
@@ -796,29 +856,178 @@ function resetBatchBtn(btn, input) {
   input.value = "";
 }
 
-/* ---------- 知识库文档管理：列表 / 删除 ---------- */
+/* ---------- 知识库文档管理：列表 / 分块 / 删除 ---------- */
+var RAG_CHUNK_LIMIT = 20;      // 分块预览每页条数（后端 limit 上限 50）
+var ragChunkState = {};        // source -> {offset, total, limit}
+
+function docMetaText(d) {
+  var parts = [];
+  if (d.doc_version) parts.push("版本 " + d.doc_version);
+  if (d.doc_date) parts.push("文档日期 " + d.doc_date);
+  if (d.ingested_at) parts.push("入库 " + String(d.ingested_at).replace("T", " "));
+  parts.push(d.chunks + " 块" + (d.parents > 0 ? "（父块 " + d.parents + "）" : ""));
+  if (d.max_page > 0) parts.push("≤" + d.max_page + " 页");
+  return parts.join(" · ");
+}
+
+function chunkTypeLabel(t) {
+  if (t === "parent") return "父块";
+  if (t === "child") return "小块";
+  return "块";
+}
+
+function findDocBtn(name) {
+  var btns = document.querySelectorAll(".doc-name-btn");
+  for (var i = 0; i < btns.length; i++) {
+    if (btns[i].getAttribute("data-name") === name) return btns[i];
+  }
+  return null;
+}
+
 function renderRagDocs(docs) {
   var el = $("ragDocs");
   if (!docs.length) {
-    el.innerHTML = '<span class="hint">知识库为空，上传文档后即可在此问答。</span>';
+    el.innerHTML = '<span class="hint">当前账号 ' + esc(userId()) +
+      ' 的知识库为空（文档按账号隔离，请确认上传时使用的账号）。</span>';
     return;
   }
   el.innerHTML = docs.map(function (d) {
     return '<div class="doc-item">' +
-             '<span class="doc-name">' + esc(d.source) + '</span>' +
-             '<span class="doc-meta">' + d.chunks + ' 块</span>' +
+             '<div class="doc-main">' +
+               '<button class="doc-name-btn" type="button" data-name="' + esc(d.source) + '">' +
+                 '<span class="caret">▸</span>' + esc(d.source) + '</button>' +
+               '<span class="doc-meta-line">' + esc(docMetaText(d)) + '</span>' +
+             '</div>' +
              '<button class="doc-del" type="button" data-name="' + esc(d.source) + '">删除</button>' +
            '</div>';
   }).join("");
+  Array.prototype.forEach.call(el.querySelectorAll(".doc-name-btn"), function (b) {
+    b.addEventListener("click", function () {
+      toggleDocChunks(b.getAttribute("data-name"), b);
+    });
+  });
   Array.prototype.forEach.call(el.querySelectorAll(".doc-del"), function (b) {
     b.addEventListener("click", function () { deleteRagDoc(b.getAttribute("data-name"), b); });
   });
 }
+
+function toggleDocChunks(name, btn) {
+  var item = btn.closest(".doc-item");
+  var box = item.nextElementSibling;
+  if (box && box.classList && box.classList.contains("doc-chunks")) {
+    item.parentNode.removeChild(box);
+    var caret = btn.querySelector(".caret");
+    if (caret) caret.textContent = "▸";
+    return;
+  }
+  var caret = btn.querySelector(".caret");
+  if (caret) caret.textContent = "▾";
+  box = document.createElement("div");
+  box.className = "doc-chunks";
+  box.setAttribute("data-source", name);
+  box.innerHTML = '<div class="chunk-list"><span class="hint">加载中…</span></div>';
+  item.parentNode.insertBefore(box, item.nextSibling);
+  loadChunks(name, 0, box, null);
+}
+
+function loadChunks(name, offset, box, highlightIdx) {
+  var list = box.querySelector(".chunk-list");
+  if (list) list.innerHTML = '<span class="hint">加载中…</span>';
+  // source 走查询参数：文件名可能含 "/"、"#"、"?"，放进路径会被截断
+  var url = "/rag/documents/chunks?source=" + encodeURIComponent(name) +
+    "&offset=" + offset + "&limit=" + RAG_CHUNK_LIMIT;
+  fetch(url, { headers: authHeaders() })
+    .then(function (r) {
+      handleUnauthorized(r);
+      if (r.status === 404) throw new Error("该文档不在当前账号的知识库中");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function (d) { renderChunks(name, d, box, highlightIdx); })
+    .catch(function (e) {
+      box.innerHTML = '<span class="hint">分块加载失败：' + esc(e.message) + "</span>";
+    });
+}
+
+function renderChunks(name, d, box, highlightIdx) {
+  ragChunkState[name] = { offset: d.offset, total: d.total, limit: d.limit };
+  var html = '<div class="chunk-list">';
+  if (!d.chunks.length) html += '<span class="hint">没有分块</span>';
+  d.chunks.forEach(function (c) {
+    var meta = [];
+    if (c.page) meta.push("第" + c.page + "页");
+    if (c.heading) meta.push(c.heading);
+    meta.push(c.chars + " 字");
+    var no = c.chunk_type === "parent"
+      ? ("父块 P" + c.chunk_index)
+      : ("#" + c.chunk_index + " · " + chunkTypeLabel(c.chunk_type));
+    html += '<div class="chunk-item" data-idx="' + c.chunk_index + '" data-type="' + esc(c.chunk_type) + '">' +
+              '<div class="chunk-head"><span class="chunk-no">' + no + '</span><span>' +
+                esc(meta.join(" · ")) + '</span></div>' +
+              '<div class="chunk-text">' + esc(c.preview) + '</div>' +
+            '</div>';
+  });
+  html += "</div>";
+  var pages = Math.max(1, Math.ceil(d.total / d.limit));
+  var cur = Math.floor(d.offset / d.limit) + 1;
+  html += '<div class="chunk-pager">' +
+            '<button class="mini-btn chunk-prev" type="button"' + (cur <= 1 ? " disabled" : "") + '>上一页</button>' +
+            '<span>第 ' + cur + " / " + pages + ' 页（共 ' + d.total + ' 块）</span>' +
+            '<button class="mini-btn chunk-next" type="button"' + (cur >= pages ? " disabled" : "") + '>下一页</button>' +
+          '</div>';
+  box.innerHTML = html;
+
+  var prev = box.querySelector(".chunk-prev"), next = box.querySelector(".chunk-next");
+  if (prev) prev.addEventListener("click", function () { loadChunks(name, Math.max(0, d.offset - d.limit), box, null); });
+  if (next) next.addEventListener("click", function () { loadChunks(name, d.offset + d.limit, box, null); });
+
+  if (highlightIdx !== null && highlightIdx !== undefined && highlightIdx !== "") {
+    var target = null;
+    Array.prototype.forEach.call(box.querySelectorAll(".chunk-item"), function (el) {
+      if (Number(el.getAttribute("data-idx")) === Number(highlightIdx) &&
+          el.getAttribute("data-type") !== "parent") target = el;
+    });
+    if (target) {
+      target.classList.add("hit");
+      target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+}
+
+/* 引用点击：展开对应文档分块，并跳到该分块所在页高亮 */
+function openCitation(file, chunkIdx) {
+  if (!file) return;
+  var btn = findDocBtn(file);
+  if (!btn) {
+    loadRagDocs().then(function () {
+      if (findDocBtn(file)) { openCitation(file, chunkIdx); return; }
+      var el = $("ragDocs");
+      if (el) el.insertAdjacentHTML("afterbegin",
+        '<span class="hint">引用的文档“' + esc(file) + '”不在当前账号的知识库中。</span>');
+    });
+    return;
+  }
+  var item = btn.closest(".doc-item");
+  var box = item.nextElementSibling;
+  if (!box || !box.classList || !box.classList.contains("doc-chunks")) {
+    var caret = btn.querySelector(".caret");
+    if (caret) caret.textContent = "▾";
+    box = document.createElement("div");
+    box.className = "doc-chunks";
+    box.setAttribute("data-source", file);
+    item.parentNode.insertBefore(box, item.nextSibling);
+  }
+  var idx = Number(chunkIdx);
+  var offset = isNaN(idx) ? 0 : Math.max(0, Math.floor(idx / RAG_CHUNK_LIMIT) * RAG_CHUNK_LIMIT);
+  loadChunks(file, offset, box, isNaN(idx) ? null : idx);
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 function loadRagDocs() {
   var el = $("ragDocs");
   if (el) el.innerHTML = '<span class="hint">加载中…</span>';
-  fetch("/rag/documents", { headers: { "X-API-Key": apiKey(), "X-User": userId() } })
-    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  return fetch("/rag/documents", { headers: authHeaders() })
+    .then(ensureOk)
     .then(function (d) { renderRagDocs(d.documents || []); })
     .catch(function () { if (el) el.innerHTML = '<span class="hint">文档列表加载失败</span>'; });
 }
@@ -842,9 +1051,10 @@ function deleteRagDoc(name, btn) {
   btn.disabled = true; btn.textContent = "删除中…";
   fetch("/rag/documents?source=" + encodeURIComponent(name), {
     method: "DELETE",
-    headers: { "X-API-Key": apiKey(), "X-User": userId() },
+    headers: authHeaders(),
   })
     .then(function (r) {
+      handleUnauthorized(r);
       if (r.status === 404) { resetDelBtn(btn); loadRagDocs(); return null; }
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
@@ -866,7 +1076,7 @@ function renderDoc(data) {
     html += '<div class="card"><h3>转换成功</h3>';
     if (data.plan && data.plan.source_format) html += '<div class="meta">' + esc(data.plan.source_format) + " → " + esc(data.plan.target_format) + "</div>";
     if (data.retry_count > 0) html += '<div class="meta">经 ' + data.retry_count + " 次重试后通过自动校验</div>";
-    if (data.output_filename) html += '<a class="dl-btn" href="/doc/download/' + encodeURIComponent(data.output_filename) + '">下载结果：' + esc(data.output_filename) + "</a>";
+    if (data.output_filename) html += '<button class="dl-btn" type="button" data-dl="' + esc(data.output_filename) + '">下载结果：' + esc(data.output_filename) + "</button>";
     html += "</div>";
   } else if (data.error) {
     html += '<div class="card"><div class="error">' + esc(data.error) + "</div></div>";
@@ -874,6 +1084,25 @@ function renderDoc(data) {
     html += '<div class="card"><div class="empty">暂无结果。</div></div>';
   }
   $("docResult").innerHTML = html;
+  var dl = $("docResult").querySelector("[data-dl]");
+  if (dl) dl.addEventListener("click", function () { downloadWithAuth(dl.getAttribute("data-dl")); });
+}
+/* 下载需要带令牌：用 fetch 取 blob 再触发保存（普通 <a> 无法附带 Authorization） */
+function downloadWithAuth(name) {
+  fetch("/doc/download/" + encodeURIComponent(name), { headers: authHeaders() })
+    .then(function (r) {
+      handleUnauthorized(r);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.blob();
+    })
+    .then(function (blob) {
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    })
+    .catch(function (e) { alert("下载失败：" + e.message); });
 }
 function convertDoc() {
   var f = $("docFile").files[0];
@@ -884,8 +1113,9 @@ function convertDoc() {
   $("docResult").innerHTML = loading("正在提交转换任务…");
   var fd = new FormData(); fd.append("file", f); fd.append("instruction", inst);
   // 异步转换：提交拿 task_id → 1 秒轮询任务状态，避免大文件长时间占用连接
-  fetch("/doc/convert/async", { method: "POST", headers: { "X-API-Key": apiKey() }, body: fd })
+  fetch("/doc/convert/async", { method: "POST", headers: authHeaders(), body: fd })
     .then(function (r) {
+      handleUnauthorized(r);
       if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || ("HTTP " + r.status)); });
       return r.json();
     })
@@ -900,8 +1130,8 @@ function convertDoc() {
 }
 function pollDocTask(taskId, btn) {
   var timer = setInterval(function () {
-    fetch("/doc/tasks/" + taskId, { headers: { "X-API-Key": apiKey() } })
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    fetch("/doc/tasks/" + taskId, { headers: authHeaders() })
+      .then(ensureOk)
       .then(function (t) {
         if (t.status === "processing") return;   // 继续轮询
         clearInterval(timer);
@@ -942,7 +1172,7 @@ $("docInstruction").addEventListener("keydown", function (e) {
 });
 
 /* ---------- 登录 / 登出 ---------- */
-function isLoggedIn() { return !!localStorage.getItem("account"); }
+function isLoggedIn() { return !!localStorage.getItem("token"); }
 function showLogin() { $("loginView").style.display = ""; $("mainView").style.display = "none"; }
 function showMain() {
   $("loginView").style.display = "none"; $("mainView").style.display = "";
@@ -958,12 +1188,13 @@ function doLogin() {
     return;
   }
   $("loginMsg").textContent = "登录中…";
-  fetch("/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account: account, api_key: key }) })
+  fetch("/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account: account, password: key }) })
     .then(function (r) { return r.json(); })
     .then(function (d) {
-      if (d.ok) {
+      if (d.ok && d.token) {
         localStorage.setItem("account", d.account);
-        localStorage.setItem("api_key", key);
+        localStorage.setItem("token", d.token);  // 身份以令牌为准，不再保存 X-User/X-API-Key
+        localStorage.removeItem("api_key");
         $("loginMsg").textContent = "";
         showMain();
       } else {
@@ -973,6 +1204,7 @@ function doLogin() {
     .catch(function (e) { $("loginMsg").textContent = "登录请求失败：" + e.message; });
 }
 function doLogout() {
+  localStorage.removeItem("token");
   localStorage.removeItem("account");
   localStorage.removeItem("api_key");
   $("loginAccount").value = ""; $("loginKey").value = ""; $("loginMsg").textContent = "";
@@ -980,12 +1212,12 @@ function doLogout() {
 }
 function detectAuth() {
   fetch("/api/health").then(function (r) { return r.json(); }).then(function (h) {
-    if (h.auth_enabled) {
+    if (h.password_required) {
       $("loginKey").style.display = "";
-      $("loginHint").textContent = "服务已启用密钥认证，请输入正确的访问密钥。";
+      $("loginHint").textContent = "请输入账号与登录密码，登录后由服务端签发访问令牌。";
     } else {
       $("loginKey").style.display = "none";
-      $("loginHint").textContent = "当前未启用密钥认证，输入账号即可登录演示。";
+      $("loginHint").textContent = "当前为演示模式（未配置密码），输入账号即可登录。";
     }
   }).catch(function () { $("loginHint").textContent = "无法连接服务，请确认后端已启动。"; });
 }

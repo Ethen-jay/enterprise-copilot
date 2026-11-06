@@ -6,6 +6,7 @@
 
 import asyncio
 import logging
+import threading
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -60,14 +61,45 @@ def detect_prompt_injection(text: str) -> bool:
 # 按用户缓存的向量库（一个用户一个独立 collection，实现知识隔离）
 _stores: dict[str, VectorStore] = {}
 
-# BM25 检索器缓存：{user: (doc_count, retriever, all_docs)}，文档数变化时重建
+# BM25 检索器缓存：{user: (write_version, retriever, all_docs)}，写版本变化时重建
+# 不能用「块数」判断：同名替换后块数可能不变但内容已变，会导致 BM25 索引陈旧。
 _bm25_cache: dict[str, tuple[int, BM25Retriever, list]] = {}
+
+# 每用户写锁：串行化「查重 → 删旧 → 写新」，避免并发同名上传互相覆盖
+_write_locks: dict[str, threading.Lock] = {}
+_write_locks_guard = threading.Lock()
 
 # 反思最大重试次数
 RAG_MAX_RETRY = 2
 
 # 引擎快拒答话术（与 LLM 自拒答话术保持一致）
 NO_ANSWER_TEXT = "根据现有文档无法回答该问题。"
+
+
+class EmptyDocumentError(Exception):
+    """文档解析/切块后没有任何可入库内容（空文件、纯空白、扫描件无文本层）。"""
+
+
+class DocumentParseError(Exception):
+    """文档无法解析（空文件、损坏、格式与扩展名不符）。属于客户端输入问题，非 500。"""
+
+
+class DocumentExistsError(Exception):
+    """同名文档已存在且未选择替换（并发上传时由引擎在写锁内复核）。"""
+
+    def __init__(self, source: str):
+        self.source = source
+        super().__init__(f"同名文档已存在: {source}，请使用替换上传(replace=true)")
+
+
+def _write_lock(user: str) -> threading.Lock:
+    """取某用户的写锁（懒创建）。所有入库/替换都在该锁内做查重与写入。"""
+    with _write_locks_guard:
+        lock = _write_locks.get(user)
+        if lock is None:
+            lock = threading.Lock()
+            _write_locks[user] = lock
+        return lock
 
 
 def get_store(user: str = DEFAULT_USER) -> VectorStore:
@@ -79,32 +111,29 @@ def get_store(user: str = DEFAULT_USER) -> VectorStore:
 
 
 def _get_bm25(user: str = DEFAULT_USER) -> Optional[tuple[BM25Retriever, list]]:
-    """获取指定用户的 BM25 检索器（文档数变化时自动重建索引）。
+    """获取指定用户的 BM25 检索器（写版本变化时自动重建索引）。
 
-    父子分块模式下只索引小块（chunk_type=child），与向量检索单元保持一致，
-    排除零向量的父块。返回 (retriever, all_docs)；无文档时返回 None。
+    BM25 索引取「排除 parent」的全部可检索单元（child + flat），与向量检索
+    单元保持一致。返回 (retriever, all_docs)；无文档时返回 None。
     """
     store = get_store(user)
-    count = store.count()
-    if count == 0:
+    version = store.write_version
+    if store.count() == 0:
         _bm25_cache.pop(user, None)
         return None
 
     cached = _bm25_cache.get(user)
-    if cached and cached[0] == count:
+    if cached and cached[0] == version:
         return cached[1], cached[2]
 
-    # 重建 BM25 索引（父子分块模式下仅小块参与）
-    all_docs = store.get_all_documents(chunk_type="child" if USE_PARENT_CHILD else None)
-    if not all_docs and USE_PARENT_CHILD and count > 0:
-        # 兼容：旧数据为单层分块（无 chunk_type 标记），回退取全量
-        all_docs = store.get_all_documents()
+    # 重建 BM25 索引（排除零向量的父块；child 与 flat 都参与）
+    all_docs = store.get_all_documents(exclude_parent=True)
     if not all_docs:
         return None
     texts = [d.page_content for d in all_docs]
     retriever = BM25Retriever(texts)
-    _bm25_cache[user] = (count, retriever, all_docs)
-    logger.info("BM25 索引重建: user=%s, docs=%d", user, len(all_docs))
+    _bm25_cache[user] = (version, retriever, all_docs)
+    logger.info("BM25 索引重建: user=%s, docs=%d, version=%d", user, len(all_docs), version)
     return retriever, all_docs
 
 
@@ -141,35 +170,52 @@ def _ingest_pipeline(
         positions = [pos for _, pos in chunk_list]
         chunk_mode = "flat"
 
-    # 2. 章节标题：写入 metadata.heading，便于检索溯源到章节
+    # 2. 空内容保护：0 块不是成功，必须在删旧数据之前拦下（否则旧文档被白删）
+    if not chunks:
+        raise EmptyDocumentError(
+            f"未提取到文本：{filename}（疑似扫描件，请开启 OCR 或提供文本层）"
+        )
+
+    # 3. 章节标题：写入 metadata.heading，便于检索溯源到章节
     headings = document_loader.locate_headings(chunks, text, document_loader.extract_headings(text))
 
-    # 3. 定位每块所在 PDF 页码（非 PDF 无页码概念，pages=None 不写 page 字段）
+    # 4. 定位每块所在 PDF 页码（非 PDF 无页码概念，pages=None 不写 page 字段）
     pages = None
     if page_starts is not None:
         pages = document_loader.locate_pages_from_positions(positions, page_starts)
 
-    # 4. 存入用户独立向量库（预计算 embedding + 直接写入 collection）
+    # 5. 先算 embedding 并组装 payload（可能失败，此时尚未动旧数据）
     cb(f"chunks:{len(chunks)}")
     store = get_store(user)
     # 文档级仲裁字段：doc_date > doc_version > ingested_at（自动生成兜底）
     doc_meta = build_doc_meta(doc_date=doc_date, doc_version=doc_version)
-    if replace:
-        # 同名替换：先删旧块（含父块），避免 Chroma 对重复 ID 静默跳过导致新旧混杂
-        removed = store.delete_document(filename)
-        if removed:
-            cb(f"replacing:{removed}")
-            logger.info("替换入库: 用户=%s, %s, 删除旧块 %d 个", user, filename, removed)
     if USE_PARENT_CHILD:
-        count = store.add_parent_child_chunks(
+        payload = store.build_parent_child_payload(
             parents, child_records, source=filename, pages=pages,
             headings=headings, progress_callback=cb, doc_meta=doc_meta,
         )
     else:
-        count = store.add_chunks_fast(
+        payload = store.build_flat_payload(
             chunks, source=filename, pages=pages, headings=headings,
             progress_callback=cb, doc_meta=doc_meta,
         )
+    count = int(payload.get("chunk_count", 0))
+    if count == 0:
+        raise EmptyDocumentError(
+            f"未提取到文本：{filename}（疑似扫描件，请开启 OCR 或提供文本层）"
+        )
+
+    # 6. 写锁内「复核查重 → 删旧 → 写新」：替换失败自动回滚旧块
+    with _write_lock(user):
+        if not replace and store.has_document(filename):
+            raise DocumentExistsError(filename)
+        if replace:
+            removed = store.replace_with_payload(payload, filename)
+            if removed:
+                cb(f"replacing:{removed}")
+                logger.info("替换入库: 用户=%s, %s, 删除旧块 %d 个", user, filename, removed)
+        else:
+            store.add_payload(payload)
 
     cb("done")
     return {
@@ -208,12 +254,18 @@ def ingest(
     # 1. 解析纯文本（PDF 额外记录每页起始偏移；扫描页自动 OCR 兜底）
     cb("parsing")
     ext = Path(filename).suffix.lower()
-    if ext == ".pdf":
-        pages = document_loader.extract_pdf_pages_from_bytes(file_bytes, progress_callback=cb)
-        text, page_starts = document_loader.build_page_text(pages)
-    else:
-        text = document_loader.extract_text(file_bytes, filename)
-        page_starts = None
+    try:
+        if ext == ".pdf":
+            pages = document_loader.extract_pdf_pages_from_bytes(file_bytes, progress_callback=cb)
+            text, page_starts = document_loader.build_page_text(pages)
+        else:
+            text = document_loader.extract_text(file_bytes, filename)
+            page_starts = None
+    except Exception as e:
+        logger.warning("文档解析失败: %s", filename, exc_info=True)
+        raise DocumentParseError(
+            f"文档解析失败：{filename}（文件可能为空、已损坏或扩展名与实际格式不符）"
+        ) from e
 
     return _ingest_pipeline(
         text, page_starts, filename, user, replace, doc_date, doc_version, cb
@@ -238,12 +290,18 @@ def ingest_path(
     # 1. 从磁盘解析纯文本（PDF 额外记录每页起始偏移；扫描页自动 OCR 兜底）
     cb("parsing")
     ext = Path(filename).suffix.lower()
-    if ext == ".pdf":
-        pages = document_loader.extract_pdf_pages_from_path(path, progress_callback=cb)
-        text, page_starts = document_loader.build_page_text(pages)
-    else:
-        text = document_loader.extract_text_from_path(path, filename)
-        page_starts = None
+    try:
+        if ext == ".pdf":
+            pages = document_loader.extract_pdf_pages_from_path(path, progress_callback=cb)
+            text, page_starts = document_loader.build_page_text(pages)
+        else:
+            text = document_loader.extract_text_from_path(path, filename)
+            page_starts = None
+    except Exception as e:
+        logger.warning("文档解析失败: %s", filename, exc_info=True)
+        raise DocumentParseError(
+            f"文档解析失败：{filename}（文件可能为空、已损坏或扩展名与实际格式不符）"
+        ) from e
 
     return _ingest_pipeline(
         text, page_starts, filename, user, replace, doc_date, doc_version, cb
@@ -268,7 +326,8 @@ def ingest_path_stream(
     块与全量切分一致；仅批边界附近可能有细微差别（检索单元是 200 字小块，
     影响可忽略）。页起点/标题偏移全部累计为全局坐标，页码与章节定位不受影响。
 
-    失败回滚：任一批异常时删除已写入的块（delete_document），不留半份文档。
+    失败回滚：替换前先快照旧块；任一批异常时删除已写入的新块并恢复旧快照，
+    保证不留半份文档、也不因替换失败丢掉旧版。0 块视为失败（空/扫描件无文本层）。
     非 PDF 文本文件无页概念，退回全量管线 ingest_path。
 
     参数同 ingest_path。
@@ -281,13 +340,6 @@ def ingest_path_stream(
     cb = progress_callback or (lambda _: None)
     store = get_store(user)
     doc_meta = build_doc_meta(doc_date=doc_date, doc_version=doc_version)
-
-    # 同名替换：先删旧块（与全量管线一致，中途失败旧块同样不可恢复）
-    if replace:
-        removed = store.delete_document(filename)
-        if removed:
-            cb(f"replacing:{removed}")
-            logger.info("替换入库(流水线): 用户=%s, %s, 删除旧块 %d 个", user, filename, removed)
 
     # 切分粒度：父子模式按父块保留缓冲，单层模式按 CHUNK_SIZE
     unit = PARENT_CHUNK_SIZE if USE_PARENT_CHILD else CHUNK_SIZE
@@ -381,22 +433,57 @@ def ingest_path_stream(
         buffer = buffer[consumed:]
         buffer_start += consumed
 
-    try:
-        for batch, first_page in document_loader.iter_pdf_page_batches(path, PDF_PAGE_BATCH, cb):
-            _absorb(batch, first_page, final=False)
-        _absorb([], 0, final=True)  # flush：切完剩余缓冲
-    except Exception:
-        # 失败回滚：删除已写入的块，不留半份文档
-        rolled = 0
+    with _write_lock(user):
+        if not replace and store.has_document(filename):
+            raise DocumentExistsError(filename)
+
+        # 同名替换：先快照旧块再删，失败可原样恢复
+        snapshot: Optional[dict] = None
+        if replace:
+            snapshot = store.snapshot_document(filename)
+            removed = store.delete_document(filename)
+            if removed:
+                cb(f"replacing:{removed}")
+                logger.info(
+                    "替换入库(流水线): 用户=%s, %s, 删除旧块 %d 个", user, filename, removed
+                )
+
+        def _page_batches():
+            """只包住解析阶段：解析异常属于输入问题（422），不掩盖后续 embedding/写入异常。"""
+            try:
+                yield from document_loader.iter_pdf_page_batches(path, PDF_PAGE_BATCH, cb)
+            except Exception as e:
+                logger.warning("PDF 解析失败: %s", filename, exc_info=True)
+                raise DocumentParseError(
+                    f"文档解析失败：{filename}（文件可能为空、已损坏或扩展名与实际格式不符）"
+                ) from e
+
         try:
-            rolled = store.delete_document(filename)
+            for batch, first_page in _page_batches():
+                _absorb(batch, first_page, final=False)
+            _absorb([], 0, final=True)  # flush：切完剩余缓冲
+            if total_children == 0:
+                raise EmptyDocumentError(
+                    f"未提取到文本：{filename}（疑似扫描件，请开启 OCR 或提供文本层）"
+                )
         except Exception:
-            logger.warning("回滚清理失败: %s", filename, exc_info=True)
-        logger.warning(
-            "流水线入库失败已回滚: 用户=%s, %s, 清理 %d 块",
-            user, filename, rolled,
-        )
-        raise
+            # 失败回滚：删除已写入的新块，再恢复替换前的旧快照
+            rolled = 0
+            try:
+                rolled = store.delete_document(filename)
+            except Exception:
+                logger.warning("回滚清理新块失败: %s", filename, exc_info=True)
+            restored = 0
+            if snapshot:
+                try:
+                    restored = store.restore_snapshot(snapshot)
+                except Exception:
+                    logger.exception("回滚恢复旧块失败（需人工介入）: %s", filename)
+            logger.warning(
+                "流水线入库失败已回滚: 用户=%s, %s, 清理新块 %d, 恢复旧块 %d",
+                user, filename, rolled, restored,
+            )
+            raise
 
     cb("done")
     return {
@@ -414,6 +501,18 @@ def ingest_path_stream(
 def list_documents(user: str = DEFAULT_USER) -> list[dict]:
     """列出指定用户知识库中的文档（文件名 + 小块数 + 父块数 + 最大页码）。"""
     return get_store(user).list_documents()
+
+
+def list_document_chunks(
+    source: str,
+    user: str = DEFAULT_USER,
+    offset: int = 0,
+    limit: int = 20,
+) -> dict:
+    """分页查看指定用户知识库中某文档的分块（严格限定在该用户 collection 内）。"""
+    if not source or not source.strip():
+        raise ValueError("文件名不能为空")
+    return get_store(user).list_chunks(source.strip(), offset=offset, limit=limit)
 
 
 def delete_document(source: str, user: str = DEFAULT_USER) -> int:
@@ -492,20 +591,9 @@ async def chat(
         await asyncio.sleep(0)  # 先让 SSE 刷出状态，再进入阻塞型检索
 
         # 1. 混合检索：向量召回语义相关 + BM25 召回关键词精确匹配，取并集去重
-        use_parent_backtrack = USE_PARENT_CHILD
-        if USE_PARENT_CHILD:
-            vector_candidates = store.similarity_search_children(question, k=retrieve_k)
-            if not vector_candidates and store.count() > 0:
-                # 兼容：旧数据为单层分块（无 chunk_type 标记），小块检索落空时
-                # 回退单层全量检索，避免旧知识库被静默清空成"查不到"
-                logger.warning(
-                    "collection %s 无小块标记（旧单层数据），回退单层检索",
-                    store.collection_name,
-                )
-                vector_candidates = store.similarity_search(question, k=retrieve_k)
-                use_parent_backtrack = False
-        else:
-            vector_candidates = store.similarity_search(question, k=retrieve_k)
+        #    向量侧用「排除 parent」，child（父子小块）与 flat（单层/历史数据）
+        #    都参与检索；parent 是零向量内部结构，永不召回。
+        vector_candidates = store.similarity_search_children(question, k=retrieve_k)
 
         bm25_candidates: List = []
         bm25_result = _get_bm25(user)
@@ -554,18 +642,23 @@ async def chat(
                 },
             }
 
-        # 4. 父块回溯：Small-to-Big 检索命中小块后，取所属父块喂给 LLM
-        #    （小块保检索精度，父块保上下文完整性；引用/拒答判断仍基于小块）
-        if use_parent_backtrack:
+        # 4. 父块回溯：命中的 child 小块按 parent_id 取父块喂给 LLM（上下文完整）；
+        #    flat（单层/历史数据）没有 parent_id，直接用自身作为上下文。
+        #    引用与拒答判断仍基于命中的小块/单层块。
+        context_docs = docs
+        if USE_PARENT_CHILD:
             parent_ids = list(dict.fromkeys(  # 去重保序：多个小块命中同一父块只取一次
                 d.metadata["parent_id"] for d in docs if d.metadata.get("parent_id")
             ))
-            context_docs = store.get_parents(parent_ids) or docs  # 回溯失败降级用小块
-            logger.info(
-                "RAG 父块回溯: %d 个小块 → %d 个父块", len(docs), len(context_docs)
-            )
-        else:
-            context_docs = docs
+            flat_docs = [d for d in docs if not d.metadata.get("parent_id")]
+            if parent_ids:
+                parents = store.get_parents(parent_ids)  # 回溯失败时整段退化为小块
+                if parents:
+                    context_docs = parents + flat_docs
+                    logger.info(
+                        "RAG 父块回溯: %d 个小块 → %d 个父块（另有 %d 个单层块直用）",
+                        len(docs), len(parents), len(flat_docs),
+                    )
 
         # 4.5 Prompt Injection 检测：扫描检索片段是否含试图覆盖系统指令的文本
         for doc in docs:

@@ -13,9 +13,7 @@ gateway/app.py —— 一体化统一入口（F2）
     python -m uvicorn gateway.app:app --host 127.0.0.1 --port 8000
 """
 
-import hmac
 import logging
-import re
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -25,7 +23,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from common.config import GATEWAY_API_KEYS
+from common.auth import (
+    TOKEN_TTL_SECONDS,
+    create_token,
+    password_required,
+    verify_credentials,
+)
 from gateway.middleware import GatewayMiddleware
 from skills.text2sql.service import router as sql_router
 from skills.rag_qa.service import router as rag_router
@@ -98,7 +101,8 @@ def api_health():
     return {
         "status": "ok",
         "gateway": "enterprise-copilot",
-        "auth_enabled": bool(GATEWAY_API_KEYS),
+        "auth_enabled": True,  # 身份一律由登录签发的 JWT 派生
+        "password_required": password_required(),
         "skills": {
             "text2sql": "/ask",
             "rag_qa": "/rag/chat",
@@ -108,23 +112,29 @@ def api_health():
 
 
 # ----------------------------------------------------------------------
-# 登录：账号 + 密钥（可选）。认证启用时校验密钥，防身份冒用。
+# 登录：校验账号 + 密码（AUTH_USERS；未配置时用共享 API Key 当密码），
+# 成功后签发 JWT，后续请求一律凭令牌识别身份（服务端不再信任 X-User）。
 # ----------------------------------------------------------------------
 class LoginRequest(BaseModel):
     account: str
-    api_key: str = ""
+    password: str = ""
+    api_key: str = ""  # 兼容旧前端：api_key 字段视同密码
 
 
 @app.post("/login", tags=["gateway"])
 def login(req: LoginRequest):
-    account = (req.account or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", account):
-        return {"ok": False, "error": "账号仅限字母、数字、下划线、连字符，1-32 位"}
-    # 认证启用时，登录必须携带正确密钥，否则拒绝（防止他人输入同名冒充）
-    if GATEWAY_API_KEYS:
-        if not any(hmac.compare_digest(req.api_key or "", k) for k in GATEWAY_API_KEYS):
-            return {"ok": False, "error": "密钥错误"}
-    return {"ok": True, "account": account, "auth_enabled": bool(GATEWAY_API_KEYS)}
+    account = verify_credentials(req.account, req.password or req.api_key)
+    if not account:
+        return {"ok": False, "error": "账号或密码错误（账号仅限字母/数字/下划线/连字符，1-32 位）"}
+    return {
+        "ok": True,
+        "account": account,
+        "token": create_token(account),
+        "token_type": "Bearer",
+        "expires_in": TOKEN_TTL_SECONDS,
+        "auth_enabled": True,
+        "password_required": password_required(),
+    }
 
 
 # ----------------------------------------------------------------------

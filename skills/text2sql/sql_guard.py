@@ -47,6 +47,10 @@ AGG_FUNC_RE = re.compile(r"\b(COUNT|SUM|AVG|MIN|MAX|GROUP_CONCAT)\s*\(", re.I)
 HAS_LIMIT_RE = re.compile(r"\bLIMIT\s+\d+", re.I)
 # 末尾 LIMIT 追加位置：去掉结尾分号/空白后追加
 TRAILING_SEMI_RE = re.compile(r";+\s*$")
+# 尾部行注释：补 LIMIT 时必须插在注释之前，否则 LIMIT 会被注释掉导致语法错误
+TRAILING_LINE_COMMENT_RE = re.compile(r"(--[^\n]*\s*)$")
+# 判重/判聚合前先剥掉注释，避免注释里的 LIMIT/COUNT 干扰判断
+_COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.S)
 
 
 @dataclass
@@ -115,10 +119,17 @@ def check_sql(raw_sql: str) -> GuardResult:
     # ---- 规则 4：非聚合且无 LIMIT 的明细查询，补 LIMIT ----
     final_sql = TRAILING_SEMI_RE.sub("", text).strip()
     changed = False
-    is_aggregate = bool(AGG_FUNC_RE.search(final_sql))
-    has_limit = bool(HAS_LIMIT_RE.search(final_sql))
+    code_only = _COMMENT_RE.sub("", final_sql)
+    is_aggregate = bool(AGG_FUNC_RE.search(code_only))
+    has_limit = bool(HAS_LIMIT_RE.search(code_only))
     if not is_aggregate and not has_limit:
-        final_sql = "%s\nLIMIT %d" % (final_sql, DEFAULT_LIMIT)
+        tail = TRAILING_LINE_COMMENT_RE.search(final_sql)
+        if tail:
+            # 插在尾部注释之前，保证 LIMIT 不被注释吞掉
+            head = final_sql[:tail.start()].rstrip()
+            final_sql = "%s\nLIMIT %d\n%s" % (head, DEFAULT_LIMIT, tail.group(1).strip())
+        else:
+            final_sql = "%s\nLIMIT %d" % (final_sql, DEFAULT_LIMIT)
         changed = True
 
     return GuardResult(True, final_sql, "ok", changed=changed)

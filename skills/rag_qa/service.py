@@ -11,14 +11,14 @@ from typing import List, Optional
 
 import asyncio
 
-from fastapi import APIRouter, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from common.auth import current_user
 from skills.rag_qa import rag_engine
 from skills.rag_qa.config import ASYNC_THRESHOLD_MB, LOW_PRIORITY_MB
-from skills.rag_qa.vector_store import normalize_user
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("rag_app")
@@ -29,14 +29,6 @@ router = APIRouter()
 # 冲突仲裁字段的格式校验
 _DOC_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DOC_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,16}$")
-
-
-def _resolve_user(x_user: Optional[str]) -> str:
-    """从 X-User 请求头解析用户标识并校验格式，非法返回 400。"""
-    try:
-        return normalize_user(x_user)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 def _validate_arbiter_fields(doc_date: Optional[str], doc_version: Optional[str]) -> None:
@@ -53,6 +45,30 @@ def _validate_arbiter_fields(doc_date: Optional[str], doc_version: Optional[str]
 def _sse(event: str, data) -> str:
     """统一 SSE 帧格式：event 名 + 单行 JSON data + 空行结尾。"""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# ----------------------------------------------------------------------
+# 问答入参上限：防止超长问题/历史把 prompt 撑爆（延迟与费用都不可控）
+# ----------------------------------------------------------------------
+MAX_QUESTION_CHARS = 2000
+MAX_HISTORY_MSGS = 100
+MAX_HISTORY_CHARS = 40000
+
+# 这些异常的消息是面向用户设计的（空文档/解析失败/重名/参数不合法），可直接回显；
+# 其余异常一律给通用文案，细节只进日志，避免泄露服务器临时路径等内部信息。
+_SAFE_ERRORS = (
+    rag_engine.EmptyDocumentError,
+    rag_engine.DocumentParseError,
+    rag_engine.DocumentExistsError,
+    ValueError,
+)
+
+
+def _public_error(exc: Exception) -> str:
+    """把内部异常转成可回显文案：已知业务异常保留原文，未知异常给通用文案。"""
+    if isinstance(exc, _SAFE_ERRORS):
+        return str(exc)
+    return "处理失败，请稍后重试（已记录日志）"
 
 
 # ----------------------------------------------------------------------
@@ -143,6 +159,30 @@ class ChatResponse(BaseModel):
     reflection: dict = {}
 
 
+def _validate_chat_request(req: ChatRequest) -> None:
+    """校验问答入参长度：问题 ≤2000 字；历史 ≤100 条且总字符 ≤40000。"""
+    if len(req.question) > MAX_QUESTION_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"问题过长（{len(req.question)} 字），上限 {MAX_QUESTION_CHARS} 字，请精简后重试",
+        )
+    history = req.history or []
+    if len(history) > MAX_HISTORY_MSGS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"历史消息过多（{len(history)} 条），上限 {MAX_HISTORY_MSGS} 条",
+        )
+    total = 0
+    for msg in history:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        total += len(content) if isinstance(content, str) else 0
+    if total > MAX_HISTORY_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"历史内容过长（{total} 字），上限 {MAX_HISTORY_CHARS} 字，请清空会话后重试",
+        )
+
+
 class IngestResponse(BaseModel):
     filename: str
     chunks: int
@@ -165,7 +205,7 @@ async def ingest(
     replace: bool = Form(False),
     doc_date: Optional[str] = Form(None),
     doc_version: Optional[str] = Form(None),
-    x_user: Optional[str] = Header(None),
+    user: str = Depends(current_user),
 ):
     """上传文档并入库：解析 → 分块 → embedding → 该用户专属 Chroma collection。
 
@@ -178,7 +218,6 @@ async def ingest(
         raise HTTPException(status_code=400, detail="文件名为空")
 
     _validate_ext(file.filename)
-    user = _resolve_user(x_user)
     _validate_arbiter_fields(doc_date, doc_version)
 
     # 先落盘并做大小校验，通过后才查重/删旧，避免传一半失败却删掉旧版
@@ -220,11 +259,21 @@ async def ingest(
                 paged=result.get("paged", False),
                 chunk_mode=result.get("chunk_mode", "flat"),
             )
+        except rag_engine.EmptyDocumentError as e:
+            # 0 块不是成功：空文件/纯空白/扫描件无文本层，旧数据未被改动
+            logger.warning("入库无内容: user=%s, %s", user, file.filename)
+            raise HTTPException(status_code=422, detail=str(e))
+        except rag_engine.DocumentParseError as e:
+            logger.warning("入库解析失败: user=%s, %s", user, file.filename)
+            raise HTTPException(status_code=422, detail=str(e))
+        except rag_engine.DocumentExistsError as e:
+            raise HTTPException(status_code=409, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
+        except Exception:
+            # 不把内部异常文本（可能含服务器临时路径）返回给客户端，细节只进日志
             logger.exception("入库失败")
-            raise HTTPException(status_code=500, detail=f"入库失败: {e}")
+            raise HTTPException(status_code=500, detail="入库失败，请稍后重试（已记录日志）")
     finally:
         tmp_path.unlink(missing_ok=True)  # 无论成败，清理落盘临时文件
 
@@ -235,7 +284,7 @@ async def ingest_stream(
     replace: bool = Form(False),
     doc_date: Optional[str] = Form(None),
     doc_version: Optional[str] = Form(None),
-    x_user: Optional[str] = Header(None),
+    user: str = Depends(current_user),
 ):
     """SSE 流式入库：实时推送解析/分块/embedding/存储/OCR 进度。
 
@@ -246,7 +295,6 @@ async def ingest_stream(
         raise HTTPException(status_code=400, detail="文件名为空")
 
     _validate_ext(file.filename)
-    user = _resolve_user(x_user)
     _validate_arbiter_fields(doc_date, doc_version)
 
     # 同名冲突：非替换模式在建流前直接 409（SSE 一旦开始就无法改状态码）
@@ -298,7 +346,8 @@ async def ingest_stream(
                 result = task.result()
                 yield f"data: {json.dumps({'status': 'done', 'result': result}, ensure_ascii=False)}\n\n"
             except Exception as e:
-                yield f"data: {json.dumps({'status': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
+                logger.exception("流式入库失败")
+                yield f"data: {json.dumps({'status': 'error', 'error': _public_error(e)}, ensure_ascii=False)}\n\n"
         finally:
             tmp_path.unlink(missing_ok=True)  # 无论成败，清理落盘临时文件
 
@@ -449,7 +498,7 @@ async def _run_single_task(
         )
     except Exception as e:
         logger.exception("异步入库失败: task=%s, %s", task_id, filename)
-        info["failed"].append({"source": filename, "error": str(e)})
+        info["failed"].append({"source": filename, "error": _public_error(e)})
         info["stage"] = "error"
     finally:
         info["status"] = "completed"
@@ -464,7 +513,7 @@ async def ingest_async(
     replace: bool = Form(False),
     doc_date: Optional[str] = Form(None),
     doc_version: Optional[str] = Form(None),
-    x_user: Optional[str] = Header(None),
+    user: str = Depends(current_user),
 ):
     """大文件异步入库（层2）：校验落盘后立即返回 task_id，后台排队处理。
 
@@ -476,7 +525,6 @@ async def ingest_async(
         raise HTTPException(status_code=400, detail="文件名为空")
 
     _validate_ext(file.filename)
-    user = _resolve_user(x_user)
     _validate_arbiter_fields(doc_date, doc_version)
 
     if not replace and rag_engine.get_store(user).has_document(file.filename):
@@ -500,6 +548,7 @@ async def ingest_async(
 
     task_id = uuid.uuid4().hex[:12]
     TASKS[task_id] = {
+        "user": user,  # 任务绑定创建者，跨用户查询一律 404
         "status": "processing",
         "total": 1,
         "done": 0,
@@ -557,7 +606,7 @@ async def _process_batch_task(task_id: str, user: str, replace: bool, items: lis
                 info["results"].append({"source": source, "chunks": result["chunks"]})
             except Exception as e:
                 logger.warning("批量入库单文件失败: %s, %s", source, e)
-                info["failed"].append({"source": source, "error": str(e)})
+                info["failed"].append({"source": source, "error": _public_error(e)})
             finally:
                 tmp_path.unlink(missing_ok=True)
                 info["done"] += 1
@@ -575,7 +624,7 @@ async def _process_batch_task(task_id: str, user: str, replace: bool, items: lis
 async def ingest_batch(
     files: List[UploadFile] = File(...),
     replace: bool = Form(False),
-    x_user: Optional[str] = Header(None),
+    user: str = Depends(current_user),
 ):
     """批量导入：接收多文件（前端可用目录选择），落盘后立即返回任务ID，后台逐份处理。
 
@@ -585,7 +634,6 @@ async def ingest_batch(
     if not files:
         raise HTTPException(status_code=400, detail="未选择任何文件")
 
-    user = _resolve_user(x_user)
     task_id = uuid.uuid4().hex[:12]
     task_dir = UPLOAD_TMP_DIR / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -610,6 +658,7 @@ async def ingest_batch(
             rejected.append({"source": name, "error": f"接收失败: {e}"})
 
     TASKS[task_id] = {
+        "user": user,  # 任务绑定创建者，跨用户查询一律 404
         "status": "processing",
         "total": len(files),
         "done": len(rejected),  # 校验即拒的视为已处理
@@ -645,10 +694,13 @@ async def ingest_batch(
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
-def get_task_status(task_id: str):
-    """查询入库任务进度（前端轮询；单文件任务含细粒度 stage）。"""
+def get_task_status(task_id: str, user: str = Depends(current_user)):
+    """查询入库任务进度（前端轮询；单文件任务含细粒度 stage）。
+
+    任务绑定创建者：其他账号查询同一 task_id 一律 404，不泄露任务是否存在。
+    """
     info = TASKS.get(task_id)
-    if not info:
+    if not info or info.get("user") != user:
         raise HTTPException(status_code=404, detail="任务不存在或已过期（任务表在内存中，服务重启即清空）")
     return TaskStatusResponse(
         task_id=task_id,
@@ -664,14 +716,15 @@ def get_task_status(task_id: str):
 
 
 @router.get("/tasks/{task_id}/events")
-async def task_events(task_id: str):
+async def task_events(task_id: str, user: str = Depends(current_user)):
     """入库任务 SSE 进度流（层2 的进度通道，复用 event-stream 形态）。
 
     事件：stage（阶段变化，含 status/done/total 快照）→ final（完成，含结果）。
     与 /ingest/stream 同为 SSE；轮询 /tasks/{task_id} 与本端点二选一。
+    任务绑定创建者，跨账号订阅同一 task_id 一律 404。
     """
     info = TASKS.get(task_id)
-    if not info:
+    if not info or info.get("user") != user:
         raise HTTPException(status_code=404, detail="任务不存在或已过期（任务表在内存中，服务重启即清空）")
 
     async def event_generator():
@@ -703,12 +756,32 @@ class DocumentItem(BaseModel):
     chunks: int            # 小块（可检索单元）数量
     parents: int = 0       # 父块数量（父子分块模式，单层模式为 0）
     max_page: int = 0      # 最大页码（非 PDF 文档为 0）
+    ingested_at: Optional[str] = None   # 入库时间（旧数据无此字段时为 null）
+    doc_date: Optional[str] = None      # 文档日期（上传时可选指定）
+    doc_version: Optional[str] = None   # 文档版本号（上传时可选指定）
 
 
 class DocumentListResponse(BaseModel):
     user: str
     total_docs: int
     documents: list[DocumentItem]
+
+
+class ChunkItem(BaseModel):
+    chunk_index: int            # 小块序号；父块为 parent_index
+    chunk_type: str             # child / parent / flat（旧数据无标记）
+    page: Optional[int] = None  # PDF 页码（非 PDF 或父块为 null）
+    heading: Optional[str] = None
+    chars: int                  # 分块字符数
+    preview: str                # 正文预览（前 300 字）
+
+
+class ChunkListResponse(BaseModel):
+    source: str
+    total: int                  # 该文档在当前用户知识库内的分块总数
+    offset: int
+    limit: int
+    chunks: list[ChunkItem]
 
 
 class DocumentDeleteResponse(BaseModel):
@@ -718,9 +791,8 @@ class DocumentDeleteResponse(BaseModel):
 
 
 @router.get("/documents", response_model=DocumentListResponse)
-def list_documents(x_user: Optional[str] = Header(None)):
+def list_documents(user: str = Depends(current_user)):
     """列出当前用户知识库中的全部文档（文件名 + 块数）。"""
-    user = _resolve_user(x_user)
     docs = rag_engine.list_documents(user=user)
     return DocumentListResponse(
         user=user,
@@ -729,17 +801,46 @@ def list_documents(x_user: Optional[str] = Header(None)):
     )
 
 
+@router.get("/documents/chunks", response_model=ChunkListResponse)
+def list_document_chunks(
+    source: str,
+    offset: int = 0,
+    limit: int = 20,
+    user: str = Depends(current_user),
+):
+    """分页查看当前用户知识库中某文档的分块（只读，不改变问答链路）。
+
+    source 走查询参数而不是路径参数：文件名可能含 "/"、"#"、"?" 等字符，
+    放进路径会被 URL 解析截断或路由不匹配。
+    严格限定在令牌身份对应的 collection 内：来源属于其他账号时按 404 处理，
+    不返回任何内容。limit 上限 50，防止一次拉全量。
+    """
+    offset = max(offset, 0)
+    limit = min(max(limit, 1), 50)
+    try:
+        result = rag_engine.list_document_chunks(
+            source, user=user, offset=offset, limit=limit
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("读取分块失败")
+        raise HTTPException(status_code=500, detail="读取分块失败，请稍后重试（已记录日志）")
+    if result["total"] == 0:
+        raise HTTPException(status_code=404, detail=f"知识库中不存在文档: {source}")
+    return ChunkListResponse(source=source, **result)
+
+
 @router.delete("/documents", response_model=DocumentDeleteResponse)
-def delete_document(source: str, x_user: Optional[str] = Header(None)):
+def delete_document(source: str, user: str = Depends(current_user)):
     """按文件名删除当前用户知识库中的某个文档（其全部向量块一并删除）。"""
-    user = _resolve_user(x_user)
     try:
         deleted = rag_engine.delete_document(source, user=user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("删除文档失败")
-        raise HTTPException(status_code=500, detail=f"删除失败: {e}")
+        raise HTTPException(status_code=500, detail="删除失败，请稍后重试（已记录日志）")
     if deleted == 0:
         raise HTTPException(status_code=404, detail=f"知识库中不存在文档: {source}")
     logger.info("删除文档: user=%s, %s, 删除 %d 块", user, source, deleted)
@@ -747,13 +848,14 @@ def delete_document(source: str, x_user: Optional[str] = Header(None)):
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, x_user: Optional[str] = Header(None)):
+async def chat(req: ChatRequest, user: str = Depends(current_user)):
     """问答：在该用户专属知识库内检索 Top-K → 拼 Prompt → 调 LLM。"""
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
+    _validate_chat_request(req)
 
     try:
-        result = await rag_engine.chat(req.question, history=req.history, user=_resolve_user(x_user))
+        result = await rag_engine.chat(req.question, history=req.history, user=user)
         return ChatResponse(
             answer=result["answer"],
             citations=result["citations"],
@@ -761,21 +863,21 @@ async def chat(req: ChatRequest, x_user: Optional[str] = Header(None)):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("问答失败")
-        raise HTTPException(status_code=500, detail=f"问答失败: {e}")
+        raise HTTPException(status_code=500, detail="问答失败，请稍后重试（已记录日志）")
 
 
 @router.post("/chat/stream")
-async def chat_stream(req: ChatRequest, x_user: Optional[str] = Header(None)):
+async def chat_stream(req: ChatRequest, user: str = Depends(current_user)):
     """问答 SSE 状态进度流：检索中 → 重排中 → 生成中，最后 final 返回完整 ChatResponse。
 
     与 /ingest/stream 同为 event-stream 形态；/chat 的 JSON 行为保持不变。
     """
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
+    _validate_chat_request(req)
 
-    user = _resolve_user(x_user)
     queue: asyncio.Queue = asyncio.Queue()
 
     def progress_cb(evt: dict) -> None:
@@ -816,9 +918,9 @@ async def chat_stream(req: ChatRequest, x_user: Optional[str] = Header(None)):
                 result = task.result()
             except ValueError as e:
                 yield _sse("error", {"stage": "error", "error": str(e)})
-            except Exception as e:
+            except Exception:
                 logger.exception("问答失败")
-                yield _sse("error", {"stage": "error", "error": f"问答失败: {e}"})
+                yield _sse("error", {"stage": "error", "error": "问答失败，请稍后重试（已记录日志）"})
             else:
                 payload = ChatResponse(
                     answer=result["answer"],

@@ -17,6 +17,26 @@ from skills.rag_qa.config import ENABLE_OCR, OCR_DPI, OCR_MIN_CHARS
 SUPPORTED_EXT = {".pdf", ".md", ".markdown", ".txt", ".json", ".jsonl"}
 
 
+def decode_text_bytes(data: bytes) -> str:
+    """按 BOM/编码探测解码纯文本：UTF-8（含 BOM）→ UTF-16（有 BOM）→ GB18030。
+
+    GB18030 是 GBK/GB2312 的超集，覆盖国内常见的 Windows 记事本 txt；
+    全部失败才报错（交由上层转成 422，而不是静默产出乱码）。
+    """
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8")
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("gb18030")
+    except UnicodeDecodeError as e:
+        raise ValueError("文本编码无法识别（已尝试 UTF-8 / UTF-16 / GB18030）") from e
+
+
 def extract_text(file_bytes: bytes, filename: str) -> str:
     """从文档字节内容中抽取纯文本（不写磁盘）。
 
@@ -35,7 +55,7 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
     if ext == ".pdf":
         return _extract_pdf(file_bytes)
     elif ext in (".md", ".markdown", ".txt"):
-        return file_bytes.decode("utf-8")
+        return decode_text_bytes(file_bytes)
     elif ext in (".json", ".jsonl"):
         return _extract_json(file_bytes)
     else:
@@ -60,7 +80,7 @@ def extract_text_from_path(path: str, filename: str) -> str:
     if ext == ".pdf":
         return "\n".join(extract_pdf_pages_from_path(path))
     elif ext in (".md", ".markdown", ".txt"):
-        return Path(path).read_text(encoding="utf-8")
+        return decode_text_bytes(Path(path).read_bytes())
     elif ext in (".json", ".jsonl"):
         return _extract_json(Path(path).read_bytes())
     else:

@@ -9,9 +9,12 @@
 固定不可改：已存在的旧 collection（如默认 l2 建的）保持原 space，仅打日志提示，
 不影响可用性（向量已归一化时 l2 与 cosine 排序等价）。
 
-Small-to-Big 父子分块：同一 collection 内存两类文档（metadata.chunk_type 区分）：
-- child（小块，200 字）：带真实向量，是唯一参与向量检索单元，metadata 存 parent_id
+Small-to-Big 父子分块：同一 collection 内按 metadata.chunk_type 区分三类文档：
+- child（小块，200 字）：带真实向量，是父子模式下的检索单元，metadata 存 parent_id
 - parent（父块，1000 字）：零向量（不参与检索），仅按 ID 回溯取文本，喂给 LLM
+- flat（单层分块，500 字）：带真实向量，关闭父子模式时写入；历史上未打标的
+  旧块由 scripts/migrate_legacy_flat_chunks.py 一次性补标为 flat
+检索与 BM25 索引一律用「排除 parent」条件，child 与 flat 都可被召回。
 
 冲突仲裁：build_doc_meta 构造文档级仲裁字段（doc_date > doc_version >
 ingested_at），写入该文档全部块（child+parent）的 metadata，供拼 prompt 时
@@ -40,15 +43,18 @@ DEFAULT_COLLECTION = "rag_knowledge_base"
 # 用户名合法格式：字母/数字/下划线/连字符，1-32 位（与登录账号规则一致）
 USER_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
+# 块 ID 末尾序号：兼容三种历史格式 {source}#{n}、{source}#c{n}、{source}#p{n}
+_TRAILING_INDEX_RE = re.compile(r"#(?:c|p)?(\d+)$")
+
 
 def normalize_user(user: Optional[str]) -> str:
-    """规范化用户名：空值回退 default；非法格式抛 ValueError。"""
+    """校验用户名；空值直接报错（身份必须由登录令牌显式派生，不再回退 default）。"""
     user = (user or "").strip()
     if not user:
-        return DEFAULT_USER
+        raise ValueError("用户标识不能为空：身份必须由登录令牌派生")
     if not USER_PATTERN.fullmatch(user):
         raise ValueError(
-            "X-User 格式非法：仅允许字母、数字、下划线、连字符，1-32 位"
+            "用户标识格式非法：仅允许字母、数字、下划线、连字符，1-32 位"
         )
     return user
 
@@ -94,6 +100,10 @@ class VectorStore:
             persist_directory=str(CHROMA_DIR),
             collection_metadata={"hnsw:space": VECTOR_SPACE},
         )
+        # 写版本号：每次写入/删除自增。检索侧（BM25 索引缓存）据此判断索引是否过期，
+        # 不能只比 count——同名替换后条数可能完全相同而内容已变。
+        self._write_version = 0
+
         # Chroma 的 space 建 collection 时固定：同名旧 collection 复用时保持原 space，
         # 此处检测不一致仅提示（向量已归一化，l2 与 cosine 排序等价，不影响可用性）
         actual = (self._store._collection.metadata or {}).get("hnsw:space")  # noqa: SLF001
@@ -104,19 +114,27 @@ class VectorStore:
                 self.collection_name, actual, VECTOR_SPACE,
             )
 
-    def add_chunks_fast(
+    @property
+    def write_version(self) -> int:
+        """写版本号（单调自增），供上层缓存（BM25）判断是否需要重建。"""
+        return self._write_version
+
+    # ------------------------------------------------------------------
+    # 写入分两段：build_*_payload 只做 embedding + 组装（可失败且不落库），
+    # add_payload/replace_with_payload 才真正写 Chroma。
+    # 这样「同名替换」可以先把新旧内容都准备好，再删旧写新，失败可回滚。
+    # ------------------------------------------------------------------
+    def build_flat_payload(
         self,
         chunks: List[str],
         source: str,
-        progress_callback: Optional[Callable[[str], None]] = None,
         pages: Optional[List[int]] = None,
         headings: Optional[List[str]] = None,
         doc_meta: Optional[dict] = None,
         child_start: int = 0,
-    ) -> int:
-        """高性能入库（单层分块模式）：预计算 embedding → 直接写入 collection。
-
-        跳过 LangChain Chroma 的中间层，直接操作底层 collection。
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> dict:
+        """单层分块：预计算 embedding 并组装待写 payload（不落库）。
 
         参数:
             pages: 与 chunks 等长的页码列表（1 起）；PDF 入库时提供，
@@ -128,32 +146,27 @@ class VectorStore:
                          保证 ID/chunk_index 全文档唯一不冲突；单次全量写入保持默认 0）。
         """
         if not chunks:
-            return 0
+            return {"ids": [], "documents": [], "embeddings": [], "metadatas": [], "chunk_count": 0}
 
-        # 1. 预计算 embedding（并行批量）
-        if progress_callback:
-            progress_callback(f"embedding:{len(chunks)}")
+        cb = progress_callback or (lambda _: None)
+        cb(f"embedding:{len(chunks)}")
         vectors = self.embeddings.embed_documents(chunks)
+        cb("storing")
 
-        # 2. 直接写入 Chroma collection
-        if progress_callback:
-            progress_callback("storing")
         ids = [f"{source}#{child_start + i}" for i in range(len(chunks))]
         metadatas = [
             _build_metadata(source, child_start + i, pages, headings, doc_meta, local_index=i)
             for i in range(len(chunks))
         ]
+        return {
+            "ids": ids,
+            "documents": list(chunks),
+            "embeddings": vectors,
+            "metadatas": metadatas,
+            "chunk_count": len(chunks),
+        }
 
-        self._store._collection.add(  # noqa: SLF001
-            ids=ids,
-            documents=chunks,
-            embeddings=vectors,
-            metadatas=metadatas,
-        )
-
-        return len(chunks)
-
-    def add_parent_child_chunks(
+    def build_parent_child_payload(
         self,
         parent_chunks: List[Tuple[str, int]],
         child_records: List[Tuple[str, int, str]],
@@ -164,11 +177,11 @@ class VectorStore:
         doc_meta: Optional[dict] = None,
         child_start: int = 0,
         parent_start: int = 0,
-    ) -> int:
-        """Small-to-Big 父子双层入库。
+    ) -> dict:
+        """父子双层：预计算小块 embedding 并组装 child+parent 待写 payload（不落库）。
 
         小块（child）带真实向量参与检索，metadata 存 parent_id 指向父块；
-        父块（parent）存零向量（检索永远过滤 chunk_type=child，父块不会被搜到），
+        父块（parent）存零向量（检索按「排除 parent」过滤，父块不会被搜到），
         仅按 ID 回溯取文本，省一半 embedding 调用。
 
         参数:
@@ -181,16 +194,13 @@ class VectorStore:
             doc_meta: 文档级仲裁字段（doc_date/doc_version/ingested_at，见 build_doc_meta）。
             child_start: 本批小块的全局起始序号（分批写入累计偏移，保 ID/chunk_index 唯一）。
             parent_start: 本批父块的全局起始序号（parent_id 全文档唯一不冲突）。
-
-        返回:
-            入库的小块数。
         """
         if not child_records:
-            return 0
+            return {"ids": [], "documents": [], "embeddings": [], "metadatas": [], "chunk_count": 0}
         cb = progress_callback or (lambda _: None)
         doc_meta = doc_meta or {}
 
-        # 1. 小块：预计算 embedding → 直接写入
+        # 1. 小块：预计算 embedding
         cb(f"embedding:{len(child_records)}")
         child_texts = [r[0] for r in child_records]
         vectors = self.embeddings.embed_documents(child_texts)
@@ -224,22 +234,140 @@ class VectorStore:
         parent_texts = [p[0] for p in parent_chunks]
         zero_vecs = [[0.0] * dim for _ in parent_chunks]
 
-        self._store._collection.add(  # noqa: SLF001
-            ids=child_ids + parent_ids,
-            documents=child_texts + parent_texts,
-            embeddings=vectors + zero_vecs,
-            metadatas=child_metas + parent_metas,
-        )
+        return {
+            "ids": child_ids + parent_ids,
+            "documents": child_texts + parent_texts,
+            "embeddings": vectors + zero_vecs,
+            "metadatas": child_metas + parent_metas,
+            "chunk_count": len(child_records),
+        }
 
-        return len(child_records)
+    def add_payload(self, payload: dict) -> int:
+        """把 payload 一次性写入 collection，返回可检索块数（父子模式为小块数）。"""
+        ids = payload.get("ids") or []
+        if not ids:
+            return 0
+        self._store._collection.add(  # noqa: SLF001
+            ids=ids,
+            documents=payload["documents"],
+            embeddings=payload["embeddings"],
+            metadatas=payload["metadatas"],
+        )
+        self._write_version += 1
+        return int(payload.get("chunk_count", len(ids)))
+
+    def snapshot_document(self, source: str) -> dict:
+        """取出某文档的全部块（文本/元数据/向量），用于替换失败时回滚。"""
+        res = self._store._collection.get(  # noqa: SLF001
+            where={"source": source},
+            include=["documents", "metadatas", "embeddings"],
+        )
+        ids = list(res.get("ids") or [])
+        raw_embeddings = res.get("embeddings")
+        embeddings: list = []
+        if raw_embeddings is not None:
+            embeddings = [
+                (list(map(float, e)) if hasattr(e, "tolist") else list(e))
+                for e in raw_embeddings
+            ]
+        return {
+            "ids": ids,
+            "documents": list(res.get("documents") or []),
+            "metadatas": list(res.get("metadatas") or []),
+            "embeddings": embeddings,
+        }
+
+    def restore_snapshot(self, snapshot: dict) -> int:
+        """回滚：把 snapshot_document 取出的旧块原样写回。"""
+        ids = snapshot.get("ids") or []
+        if not ids:
+            return 0
+        if not snapshot.get("embeddings"):
+            raise RuntimeError("快照缺少向量，无法回滚（该 collection 可能不支持读取 embeddings）")
+        self._store._collection.add(  # noqa: SLF001
+            ids=ids,
+            documents=snapshot["documents"],
+            embeddings=snapshot["embeddings"],
+            metadatas=snapshot["metadatas"],
+        )
+        self._write_version += 1
+        return len(ids)
+
+    def replace_with_payload(self, payload: dict, source: str) -> int:
+        """原子替换：快照旧块 → 删旧 → 写新；写入失败则删新并恢复旧块。
+
+        返回被替换掉的旧块数（0 表示原本不存在，等价于普通新增）。
+        失败时抛原始异常；旧数据保证回到替换前状态（回滚本身失败会记录 error 日志）。
+        """
+        snapshot = self.snapshot_document(source)
+        removed = len(snapshot["ids"])
+        if removed:
+            self._store._collection.delete(where={"source": source})  # noqa: SLF001
+        try:
+            self.add_payload(payload)
+        except Exception:
+            try:
+                # 清掉可能写入一半的新块，避免与恢复的旧块混在一起
+                self._store._collection.delete(where={"source": source})  # noqa: SLF001
+            except Exception:
+                logger.exception("替换失败后清理新块失败: %s", source)
+            if removed:
+                try:
+                    self.restore_snapshot(snapshot)
+                    logger.warning("替换失败已恢复旧块: %s, %d 块", source, removed)
+                except Exception:
+                    logger.exception("替换失败且旧块恢复失败（需人工介入）: %s", source)
+            raise
+        return removed
+
+    def add_chunks_fast(
+        self,
+        chunks: List[str],
+        source: str,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        pages: Optional[List[int]] = None,
+        headings: Optional[List[str]] = None,
+        doc_meta: Optional[dict] = None,
+        child_start: int = 0,
+    ) -> int:
+        """单层分块入库（build_flat_payload + add_payload 的便捷包装）。"""
+        return self.add_payload(self.build_flat_payload(
+            chunks, source, pages=pages, headings=headings, doc_meta=doc_meta,
+            child_start=child_start, progress_callback=progress_callback,
+        ))
+
+    def add_parent_child_chunks(
+        self,
+        parent_chunks: List[Tuple[str, int]],
+        child_records: List[Tuple[str, int, str]],
+        source: str,
+        pages: Optional[List[int]] = None,
+        headings: Optional[List[str]] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        doc_meta: Optional[dict] = None,
+        child_start: int = 0,
+        parent_start: int = 0,
+    ) -> int:
+        """父子双层入库（build_parent_child_payload + add_payload 的便捷包装）。"""
+        return self.add_payload(self.build_parent_child_payload(
+            parent_chunks, child_records, source, pages=pages, headings=headings,
+            progress_callback=progress_callback, doc_meta=doc_meta,
+            child_start=child_start, parent_start=parent_start,
+        ))
 
     def similarity_search_children(
         self,
         query: str,
         k: int = TOP_K,
     ) -> List[Document]:
-        """Small-to-Big 检索层：只对小块（chunk_type=child）做向量检索。"""
-        return self._store.similarity_search(query, k=k, filter={"chunk_type": "child"})
+        """检索层：对全部可检索单元做向量检索。
+
+        过滤条件为「排除 parent」而非「只取 child」：child（父子模式小块）与
+        flat（单层/历史数据）都参与检索，parent 是零向量内部结构，永不召回。
+        """
+        return self._store.similarity_search(
+            query, k=k, filter={"chunk_type": {"$ne": "parent"}}
+        )
 
     def get_parents(self, parent_ids: List[str]) -> List[Document]:
         """按 ID 批量回溯父块，返回顺序与传入一致（缺失的跳过）。"""
@@ -253,14 +381,6 @@ class VectorStore:
             for id_, doc, meta in zip(res.get("ids", []), res.get("documents", []), res.get("metadatas", []))
         }
         return [by_id[pid] for pid in parent_ids if pid in by_id]
-
-    def similarity_search(
-        self,
-        query: str,
-        k: int = TOP_K,
-    ) -> List[Document]:
-        """检索最相关的 k 个片段（单层分块模式）。"""
-        return self._store.similarity_search(query, k=k)
 
     def count(self) -> int:
         """返回当前用户向量库中的文档总数。"""
@@ -284,10 +404,12 @@ class VectorStore:
         return self.count_source(source) > 0
 
     def list_documents(self) -> List[dict]:
-        """列出当前用户知识库中的所有文档：来源、小块数、父块数、最大页码。
+        """列出当前用户知识库中的所有文档：来源、小块数、父块数、最大页码、仲裁字段。
 
         小块（chunks）为可检索单元；父块（parents）为父子分块模式的内部结构；
         max_page 为 PDF 分块记录的最大页码（非 PDF 为 0）。
+        ingested_at/doc_date/doc_version 取自文档级 metadata：旧数据（单层分块时代）
+        没有这些字段，按 None 返回，不做任何推断或伪造。
         """
         res = self._store._collection.get(include=["metadatas"])  # noqa: SLF001
         docs: dict[str, dict] = {}
@@ -297,7 +419,16 @@ class VectorStore:
             if not source:
                 continue
             item = docs.setdefault(
-                source, {"source": source, "chunks": 0, "parents": 0, "max_page": 0}
+                source,
+                {
+                    "source": source,
+                    "chunks": 0,
+                    "parents": 0,
+                    "max_page": 0,
+                    "ingested_at": None,
+                    "doc_date": None,
+                    "doc_version": None,
+                },
             )
             if meta.get("chunk_type") == "parent":
                 item["parents"] += 1
@@ -306,7 +437,75 @@ class VectorStore:
                 page = meta.get("page")
                 if isinstance(page, int) and page > item["max_page"]:
                     item["max_page"] = page
+            # 文档级字段每个块都带同一份值，取任一非空即可（旧块缺失保持 None）
+            for field in ("ingested_at", "doc_date", "doc_version"):
+                if meta.get(field):
+                    item[field] = meta[field]
         return sorted(docs.values(), key=lambda d: d["source"])
+
+    def list_chunks(
+        self,
+        source: str,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> dict:
+        """分页列出指定来源文档在当前用户知识库内的分块。
+
+        只在该用户 collection 内按 metadata.source 精确匹配；来源不存在时返回
+        total=0（调用方据此给 404），不会跨账号读取。
+        排序：小块（child/flat）在前、父块在后，同类按序号升序；分页稳定。
+        """
+        source = (source or "").strip()
+        if not source:
+            return {"total": 0, "offset": offset, "limit": limit, "chunks": []}
+
+        res = self._store._collection.get(  # noqa: SLF001
+            where={"source": source}, include=["metadatas"]
+        )
+        ids = res.get("ids") or []
+        metas = res.get("metadatas") or []
+
+        entries: List[tuple] = []
+        for id_, meta in zip(ids, metas):
+            meta = meta or {}
+            chunk_type = meta.get("chunk_type") or "flat"
+            index = meta.get("chunk_index")
+            if index is None:
+                index = meta.get("parent_index")
+            if index is None:
+                match = _TRAILING_INDEX_RE.search(id_)
+                index = int(match.group(1)) if match else 0
+            order = 1 if chunk_type == "parent" else 0
+            entries.append((order, int(index), id_, chunk_type, meta))
+
+        entries.sort(key=lambda e: (e[0], e[1]))
+        total = len(entries)
+        page = entries[offset: offset + limit]
+        page_ids = [e[2] for e in page]
+
+        texts: dict[str, str] = {}
+        if page_ids:
+            got = self._store._collection.get(  # noqa: SLF001
+                ids=page_ids, include=["documents"]
+            )
+            for id_, doc in zip(got.get("ids") or [], got.get("documents") or []):
+                texts[id_] = doc or ""
+
+        chunks = []
+        for _, index, id_, chunk_type, meta in page:
+            text = texts.get(id_, "")
+            chunks.append(
+                {
+                    "chunk_index": index,
+                    "chunk_type": chunk_type,
+                    # 父块没有页码/标题字段，按缺失返回 None
+                    "page": meta.get("page") if isinstance(meta.get("page"), int) else None,
+                    "heading": meta.get("heading") or None,
+                    "chars": len(text),
+                    "preview": text[:300],
+                }
+            )
+        return {"total": total, "offset": offset, "limit": limit, "chunks": chunks}
 
     def delete_document(self, source: str) -> int:
         """按来源文件名删除其全部块（小块+父块），返回删除的块数。
@@ -317,20 +516,20 @@ class VectorStore:
         if removed == 0:
             return 0
         self._store._collection.delete(where={"source": source})  # noqa: SLF001
+        self._write_version += 1
         return removed
 
-    def get_all_documents(self, chunk_type: Optional[str] = None) -> List[Document]:
-        """返回知识库中全部文档（用于构建 BM25 索引等需要全量文本的场景）。
+    def get_all_documents(self, exclude_parent: bool = False) -> List[Document]:
+        """返回知识库中的文档（用于构建 BM25 索引等需要全量文本的场景）。
 
         参数:
-            chunk_type: 父子分块模式下传 "child" 只取小块（BM25 检索单元
-                        与向量检索单元保持一致，排除零向量的父块）；
-                        None 取全部（单层分块模式直接用）。
+            exclude_parent: True 时只取可检索单元（child + flat），排除零向量的
+                            父块；BM25 建索引用它，保证与向量检索单元一致。
         """
         try:
-            if chunk_type:
+            if exclude_parent:
                 data = self._store._collection.get(  # noqa: SLF001
-                    where={"chunk_type": chunk_type},
+                    where={"chunk_type": {"$ne": "parent"}},
                     include=["documents", "metadatas"],
                 )
             else:
@@ -355,13 +554,14 @@ def _build_metadata(
     doc_meta: Optional[dict] = None,
     local_index: Optional[int] = None,
 ) -> dict:
-    """构造 chunk metadata：source + chunk_index，PDF 分块额外存 page 页码，
-    headings 存章节标题，doc_meta 为文档级仲裁字段（doc_date/doc_version/ingested_at）。
+    """构造单层分块的 chunk metadata：source + chunk_index + chunk_type=flat，
+    PDF 分块额外存 page 页码，headings 存章节标题，
+    doc_meta 为文档级仲裁字段（doc_date/doc_version/ingested_at）。
 
     local_index: pages/headings 的本批局部索引（分批写入时与全局 chunk_index 不同，
                  单次全量写入不传，退化为 chunk_index）。"""
     idx = local_index if local_index is not None else chunk_index
-    meta = {"source": source, "chunk_index": chunk_index}
+    meta = {"source": source, "chunk_index": chunk_index, "chunk_type": "flat"}
     if pages is not None and idx < len(pages) and pages[idx]:
         meta["page"] = int(pages[idx])
     if headings is not None and idx < len(headings) and headings[idx]:
