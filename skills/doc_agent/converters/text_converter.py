@@ -21,6 +21,8 @@ _LIST_PREFIX = re.compile(r"^\s{0,3}(?:[-*+]|\d+[.)])\s+")
 
 # 行内语法
 _INLINE_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+# 独占一行的图片引用（![alt](path)）
+_IMAGE_LINE = re.compile(r"^\s*!\[[^\]]*\]\([^)]*\)\s*$")
 _INLINE_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _BOLD_STAR = re.compile(r"\*\*([^*]+)\*\*")
 _BOLD_UNDER = re.compile(r"__([^_]+)__")
@@ -73,6 +75,11 @@ def markdown_to_text(markdown_text: str) -> str:
         stripped = line.strip()
         if not stripped:
             out_lines.append("")
+            continue
+
+        # 独占一行的图片引用：纯文本不承载图片，整行移除。
+        # 不用 alt 文本占位——占位行会被当成正文段落，段落口径随之漂移。
+        if _IMAGE_LINE.match(stripped):
             continue
 
         # 水平线：整行删除

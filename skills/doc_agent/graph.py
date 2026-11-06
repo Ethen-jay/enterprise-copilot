@@ -445,7 +445,15 @@ def _execute_conversion(
     # Hub-Spoke：源 → Markdown（枢纽）→ 目标
     # 任意两种格式只需各自实现与 Markdown 的双向转换即可互通
     md_text = _read_as_markdown(src_path, src, adjustment)
-    _write_from_markdown(md_text, tgt, out_path)
+
+    # 图片基准目录：pdf/docx 抽取的图片统一落在 OUTPUT_DIR/assets；
+    # 上传的 .md/.html 里的相对图片路径只能相对它自己的目录解析，
+    # 否则会用上 OUTPUT_DIR/assets 里上一次转换留下的无关图片。
+    asset_base = OUTPUT_DIR
+    if src in ("markdown", "html", "txt", "xlsx"):
+        asset_base = Path(src_path).parent
+
+    _write_from_markdown(md_text, tgt, out_path, asset_base)
     return out_path
 
 
@@ -468,10 +476,16 @@ def _read_as_markdown(
                 "vertical_strategy": "text",
                 "horizontal_strategy": "text",
             }
-        return pdf_converter.pdf_to_markdown(src_path, table_settings=pdf_table_settings)
+        return pdf_converter.pdf_to_markdown(
+            src_path,
+            table_settings=pdf_table_settings,
+            assets_dir=OUTPUT_DIR / "assets",
+        )
 
     if src == "docx":
-        return docx_converter.docx_to_markdown(src_path)
+        return docx_converter.docx_to_markdown(
+            src_path, assets_dir=OUTPUT_DIR / "assets"
+        )
 
     if src == "html":
         html = Path(src_path).read_text(encoding="utf-8")
@@ -488,25 +502,38 @@ def _read_as_markdown(
     return Path(src_path).read_text(encoding="utf-8")
 
 
-def _write_from_markdown(md_text: str, tgt: str, out_path: str) -> None:
+def _write_from_markdown(
+    md_text: str,
+    tgt: str,
+    out_path: str,
+    asset_base: Optional[Path] = None,
+) -> None:
     """将 Markdown 文本写为目标格式（hub 的出边）。
 
     参数:
         md_text: Markdown 文本。
         tgt: 目标格式名。
         out_path: 输出文件路径。
+        asset_base: 图片相对路径的基准目录；None 时用输出文件所在目录。
     """
+    base = Path(asset_base) if asset_base else Path(out_path).parent
+
     if tgt == "markdown":
         Path(out_path).write_text(md_text, encoding="utf-8")
     elif tgt == "docx":
-        docx_converter.markdown_to_docx(md_text, output_path=out_path)
+        docx_converter.markdown_to_docx(
+            md_text, output_path=out_path, assets_dir=base
+        )
     elif tgt == "html":
-        html = html_converter.markdown_to_html(md_text)
+        # 图片内嵌为 data URI：导出的是单个 html 文件，脱离 assets/ 目录也能看到图
+        html = html_converter.markdown_to_html(md_text, base_dir=base)
         Path(out_path).write_text(html, encoding="utf-8")
     elif tgt == "xlsx":
         excel_converter.markdown_to_excel(md_text, output_path=out_path)
     elif tgt == "pdf":
-        docx_converter.markdown_to_pdf(md_text, output_path=out_path)
+        docx_converter.markdown_to_pdf(
+            md_text, output_path=out_path, assets_dir=base
+        )
     elif tgt == "txt":
         text = text_converter.markdown_to_text(md_text)
         Path(out_path).write_text(text, encoding="utf-8")

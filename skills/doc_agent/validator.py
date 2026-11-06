@@ -38,12 +38,15 @@ def validate(output_path: str | Path, source_format: str, target_format: str) ->
         issues.append(f"扩展名不匹配：实际 .{ext}，期望 .{expected_ext}")
 
     # 4. 内容完整性检查
+    # 这里只判"输出为空"（转换没产出任何内容）；"输出比源少"由反思阶段的
+    # 段落/图片/关键词对比负责。用绝对字数阈值会把本来就只有一两行的极小
+    # 源文件误判成"内容过少，可能转换失败"。
     try:
         if target_format == "markdown":
             text = path.read_text(encoding="utf-8")
             details["char_count"] = len(text)
-            if len(text.strip()) < 10:
-                issues.append("Markdown 内容过少，可能转换失败")
+            if not text.strip():
+                issues.append("Markdown 内容为空，转换失败")
             # 检查表格是否保留（如果源是 PDF/DOCX 且指令要求表格）
             if source_format in ("pdf", "docx"):
                 table_lines = [l for l in text.splitlines() if l.strip().startswith("|")]
@@ -70,13 +73,13 @@ def validate(output_path: str | Path, source_format: str, target_format: str) ->
         elif target_format == "html":
             text = path.read_text(encoding="utf-8")
             details["char_count"] = len(text)
-            if len(text.strip()) < 10:
-                issues.append("HTML 内容过少，可能转换失败")
+            if not text.strip():
+                issues.append("HTML 内容为空，转换失败")
         elif target_format == "txt":
             text = path.read_text(encoding="utf-8")
             details["char_count"] = len(text)
-            if len(text.strip()) < 10:
-                issues.append("TXT 内容过少，可能转换失败")
+            if not text.strip():
+                issues.append("TXT 内容为空，转换失败")
     except Exception as e:
         issues.append(f"内容检查异常: {e}")
 

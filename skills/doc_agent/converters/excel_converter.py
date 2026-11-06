@@ -14,6 +14,9 @@ from typing import Optional
 
 from openpyxl import Workbook
 
+# 独占一行的图片引用：xlsx 单元格不承载图片，正文 sheet 里不写占位行
+_IMAGE_LINE = re.compile(r"^\s*!\[[^\]]*\]\([^)]*\)\s*$")
+
 
 def markdown_to_excel(markdown_text: str, output_path: Optional[str] = None) -> str:
     """Markdown → Excel：提取所有表格写入 xlsx，每个表格一个 sheet。
@@ -40,8 +43,12 @@ def markdown_to_excel(markdown_text: str, output_path: Optional[str] = None) -> 
     if not tables:
         # 没有表格，把全文写入一个 sheet
         ws = wb.create_sheet("内容")
-        for i, line in enumerate(markdown_text.split("\n"), 1):
-            ws.cell(row=i, column=1, value=line)
+        row_idx = 0
+        for line in markdown_text.split("\n"):
+            if _IMAGE_LINE.match(line):
+                continue
+            row_idx += 1
+            ws.cell(row=row_idx, column=1, value=line)
     else:
         for idx, table in enumerate(tables):
             ws = wb.create_sheet(f"表格{idx + 1}")
@@ -49,12 +56,24 @@ def markdown_to_excel(markdown_text: str, output_path: Optional[str] = None) -> 
                 for col_idx, cell in enumerate(row, 1):
                     ws.cell(row=row_idx, column=col_idx, value=cell)
 
+        # 表格之外的正文写入独立 sheet，避免混排文档转换时丢失正文
+        body_lines = [
+            line for line in markdown_text.split("\n")
+            if line.strip()
+            and not _IMAGE_LINE.match(line)
+            and not (line.strip().startswith("|") and line.strip().endswith("|"))
+        ]
+        if body_lines:
+            ws = wb.create_sheet("正文")
+            for row_idx, line in enumerate(body_lines, 1):
+                ws.cell(row=row_idx, column=1, value=line)
+
     wb.save(output_path)
     return output_path
 
 
 def excel_to_markdown(xlsx_path: str | Path) -> str:
-    """Excel → Markdown：每个 sheet 转为一个 Markdown 表格。
+    """Excel → Markdown：单列 sheet 还原为正文段落，多列 sheet 转为表格。
 
     参数:
         xlsx_path: xlsx 文件路径。
@@ -66,27 +85,32 @@ def excel_to_markdown(xlsx_path: str | Path) -> str:
 
     wb = load_workbook(xlsx_path, data_only=True)
     parts = []
-    # 仅多 sheet 时输出 sheet 标题，避免单 sheet 转出多余段落
-    multi_sheet = len(wb.worksheets) > 1
 
     for ws in wb.worksheets:
-        if multi_sheet and ws.title:
-            parts.append(f"## {ws.title}\n")
-
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
             continue
 
-        # 转为 Markdown 表格
         table = []
         for row in rows:
             row_cells = [str(cell) if cell is not None else "" for cell in row]
             if any(c.strip() for c in row_cells):
                 table.append(row_cells)
 
-        if table:
+        if not table:
+            continue
+
+        # 与 _parse_xlsx 同一分类规则：单列行是正文，多列行是表格
+        max_non_empty = max(len([c for c in r if c.strip()]) for r in table)
+        if max_non_empty <= 1:
+            for row_cells in table:
+                text = next((c.strip() for c in row_cells if c.strip()), "")
+                if text:
+                    parts.append(text)
+                    parts.append("")
+        else:
             parts.append(_table_to_markdown(table))
-        parts.append("")
+            parts.append("")
 
     return "\n".join(parts).strip() + "\n"
 

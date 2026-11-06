@@ -78,7 +78,20 @@ def compare_metrics(
         # 源没表格但输出了表格，不算问题
         pass
 
-    # 3. 关键词保留率
+    # 3. 图片数量对比（图片是独立指标，不计入段落口径）
+    src_images = src_metrics.get("image_count", 0)
+    out_images = out_metrics.get("image_count", 0)
+    details["src_images"] = src_images
+    details["out_images"] = out_images
+    if src_images > 0:
+        image_diff = abs(src_images - out_images) / src_images
+        details["image_diff_ratio"] = round(image_diff, 3)
+        if image_diff > tolerance:
+            issues.append(
+                f"图片数量差异过大: 源 {src_images} → 输出 {out_images} (差异 {image_diff:.1%})"
+            )
+
+    # 4. 关键词保留率
     src_kw = set(src_metrics.get("keywords", []))
     out_kw = set(out_metrics.get("keywords", []))
     if src_kw:
@@ -120,55 +133,82 @@ def reflect_conversion(
     src_metrics = parse_metrics(src_path, source_format)
     out_metrics = parse_metrics(output_path, target_format)
 
-    # 纯文本目标不承载结构化表格：源表格在 txt 中以普通文本行保留。
-    # 将源表格行并入段落数、表格行清零，避免行数对比假失败。
-    # xlsx 例外：其 paragraph_count 本就等于数据行数，不再叠加。
-    if target_format == "txt":
-        if source_format == "xlsx":
-            effective_paras = src_metrics.get("paragraph_count", 0)
-        else:
-            effective_paras = (
+    # 扫描件判定要在图片口径折算之前取原值：纯图片 PDF 没有可解析的文字，
+    # 段落数为 0、图片数 > 0，此时不能因为"段落 0 → 0"就静默判通过。
+    scanned_pdf = (
+        source_format == "pdf"
+        and src_metrics.get("paragraph_count", 0) == 0
+        and src_metrics.get("image_count", 0) > 0
+    )
+
+    # 图片口径：txt/xlsx 目标不承载图片（txt 是纯文本、xlsx 只在正文 sheet
+    # 写文字），这类组合两端同时清零，表示"该链路不校验图片"，避免拿不到
+    # 图的一端被判成"图片丢失"。其余组合（docx/pdf/md/html 源与目标）都
+    # 参与图片校验。
+    if target_format in ("txt", "xlsx"):
+        src_metrics = {**src_metrics, "image_count": 0}
+        out_metrics = {**out_metrics, "image_count": 0}
+
+    # 纯文本 / PDF 目标不承载可稳定识别的结构化表格：
+    # 源表格在输出里以普通文本行（PDF 版式行）保留，没有独立的表格行语义。
+    # 将两端表格行并入段落数、表格行清零，避免行数对比假失败；
+    # 内容丢失仍会体现为段落数缺口，不会被掩盖。
+    if target_format in ("txt", "pdf"):
+        # 两端统一折算为“正文行 + 表格行 = 文本行”：txt/pdf 里表格也以文本行呈现，
+        # xlsx 源同样适用（_parse_xlsx 已区分单列正文行与多列表格行）。
+        src_metrics = {
+            **src_metrics,
+            "paragraph_count": (
                 src_metrics.get("paragraph_count", 0)
                 + src_metrics.get("table_row_count", 0)
-            )
-        src_metrics = {
-            **src_metrics,
-            "paragraph_count": effective_paras,
+            ),
             "table_row_count": 0,
         }
-    elif source_format == "xlsx":
-        # xlsx 的"段落"本就是表格行的近似：转出到结构化格式后，
-        # 表格由 table_row_count 承载，段落指标清零避免假失败。
-        src_metrics = {
-            **src_metrics,
-            "paragraph_count": 0,
+        # txt 输出没有表格行，该折算对其无影响；PDF 输出需同样折算，
+        # 保证两端都按"正文行 + 表格行 = 文本行"的同一口径比较。
+        out_metrics = {
+            **out_metrics,
+            "paragraph_count": (
+                out_metrics.get("paragraph_count", 0)
+                + out_metrics.get("table_row_count", 0)
+            ),
+            "table_row_count": 0,
         }
 
     # 容差比较
     comparison = compare_metrics(src_metrics, out_metrics)
+    issues = list(comparison["issues"])
+    details = dict(comparison["details"])
 
-    if comparison["passed"]:
+    if scanned_pdf:
+        details["scanned_pdf"] = True
+        issues.append(
+            "源 PDF 未提取到任何文字（疑似扫描件/纯图片 PDF），输出只含图片或为空；"
+            "请先做 OCR 文字识别再转换"
+        )
+
+    if not issues:
         return {
             "passed": True,
             "issues": [],
-            "details": comparison["details"],
+            "details": details,
             "cause": None,
             "adjustment": None,
         }
 
     # 诊断病因
-    cause = _diagnose_cause(comparison["issues"], src_metrics, out_metrics)
+    cause = _diagnose_cause(issues, src_metrics, out_metrics)
     adjustment = CAUSE_TO_ADJUSTMENT.get(cause)
 
     logger.info(
         "反思校验不通过: cause=%s, adjustment=%s, issues=%s",
-        cause, adjustment, comparison["issues"],
+        cause, adjustment, issues,
     )
 
     return {
         "passed": False,
-        "issues": comparison["issues"],
-        "details": comparison["details"],
+        "issues": issues,
+        "details": details,
         "cause": cause,
         "adjustment": adjustment,
     }
@@ -184,6 +224,12 @@ def _diagnose_cause(
 
     if "表格行数差异过大" in issues_text:
         return "table_lost"
+    if "疑似扫描件" in issues_text:
+        # 没有可重试的提取策略：换表格策略也拿不到文字，需要 OCR
+        return "scanned_pdf"
+    if "图片数量差异过大" in issues_text:
+        # 图片刻意丢失无法靠换提取策略补救，交给用户/上层处理
+        return "image_lost"
     if "段落数差异过大" in issues_text and out_metrics.get("paragraph_count", 0) < src_metrics.get("paragraph_count", 0) * 0.5:
         return "content_too_short"
     if "关键词保留率过低" in issues_text:
