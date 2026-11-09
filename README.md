@@ -174,6 +174,39 @@ curl.exe -H "Authorization: Bearer $token" -X POST http://127.0.0.1:8000/ask -H 
 curl.exe -H "X-API-Key: your-key" -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d '{"question":"当前在制工单有多少批？"}'
 ```
 
+## 生产级中间件（Redis 限流，可选）
+
+默认 `GATEWAY_MIDDLEWARE=standard`：单进程内存限流（60 次 / 60 秒 / IP），无外部依赖，演示与单机部署直接用。
+
+多进程 / 多实例部署时，各进程内存计数各算各的，需要切换为 Redis 共享计数的滑动窗口版本：
+
+1. 安装可选依赖并准备 Redis：
+
+```powershell
+.venv\Scripts\python.exe -m pip install "redis>=5.0.0"
+# 本地起一个：docker run -d -p 6379:6379 redis:7-alpine
+```
+
+2. `.env` 改一行配置并重启：
+
+```ini
+GATEWAY_MIDDLEWARE=production
+REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+3. 验证生效：
+
+```powershell
+curl.exe -s http://127.0.0.1:8000/api/health
+# "middleware": {"mode": "production", "rate_limit_backend": "redis", "degraded": false, ...}
+```
+
+启动日志也会打印 `middleware=production(redis)`；standard 模式打印 `middleware=standard`。
+
+**降级行为**：production 模式下若未安装 `redis` 包或连接失败，启动不会失败，而是自动降级为内存限流并打一条 `Redis 限流不可用，已自动降级为内存限流` 的 warning（不按请求刷屏）；此时 `/api/health` 的 `rate_limit_backend` 显示 `memory`、`degraded` 为 `true` 并给出原因。
+
+两种模式只有限流后端不同：认证（JWT / 服务 API Key）、白名单、Trace ID、审计日志字段、400/401/429/500 错误出口完全一致。Redis 版用 ZSET 滑动窗口 + Lua 原子脚本（清窗 → 计数 → ZADD → EXPIRE），避免固定窗口在切换瞬间放过 2 倍流量。
+
 ## 测试与回归
 
 测试已规范为 pytest，一条命令运行全部 31 项（含依赖 LLM/Embedding API 的端到端测试）：

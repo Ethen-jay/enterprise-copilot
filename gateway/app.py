@@ -14,6 +14,7 @@ gateway/app.py —— 一体化统一入口（F2）
 """
 
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -29,12 +30,28 @@ from common.auth import (
     password_required,
     verify_credentials,
 )
-from gateway.middleware import GatewayMiddleware
 from skills.text2sql.service import router as sql_router, health as sql_health
 from skills.rag_qa.service import router as rag_router
 from skills.doc_agent.service import router as doc_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+# 中间件模式开关：standard（默认，单进程内存限流）/ production（Redis 滑动窗口限流）
+_MIDDLEWARE_MODE = os.getenv("GATEWAY_MIDDLEWARE", "standard").strip().lower()
+if _MIDDLEWARE_MODE not in ("standard", "production"):
+    logging.getLogger("gateway.audit").warning(
+        "GATEWAY_MIDDLEWARE=%s 不是合法取值（standard|production），已回退 standard", _MIDDLEWARE_MODE
+    )
+    _MIDDLEWARE_MODE = "standard"
+
+if _MIDDLEWARE_MODE == "production":
+    from gateway.middleware_prod import GatewayMiddlewareProd as _Middleware
+    from gateway.middleware_prod import status as _middleware_status
+else:
+    from gateway.middleware import GatewayMiddleware as _Middleware
+
+    def _middleware_status() -> dict:
+        return {"rate_limit_backend": "memory", "degraded": False}
 
 # 统一前端目录（monorepo 根 / web）
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
@@ -48,8 +65,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 网关企业化中间件：Trace ID + 审计日志 + 简单限流（加在 CORS 之后，位于最外层）
-app.add_middleware(GatewayMiddleware)
+# 网关企业化中间件：Trace ID + 审计日志 + 认证 + 限流（加在 CORS 之后，位于最外层）
+app.add_middleware(_Middleware)
+logging.getLogger("gateway.audit").info(
+    "middleware=%s", "production(redis)" if _MIDDLEWARE_MODE == "production" else "standard"
+)
 
 
 # ----------------------------------------------------------------------
@@ -107,6 +127,8 @@ def api_health(probe: bool = False):
         # probe=1 时附带 LLM 连通性探测结果，避免“配置齐全但地址不可达”的假绿
         "llm": sql.get("llm"),
         "database": sql.get("database"),
+        # 实际生效的中间件与限流后端（production 降级时会显示 memory + 原因）
+        "middleware": {"mode": _MIDDLEWARE_MODE, **_middleware_status()},
         "skills": {
             "text2sql": "/ask",
             "rag_qa": "/rag/chat",

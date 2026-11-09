@@ -128,7 +128,7 @@ class GatewayMiddleware:
             state["auth_type"] = "public"
 
         # 写操作限流：命中直接回 429，不进入下游
-        if _rate_limited(scope):
+        if await self._check_rate_limit(scope):
             await self._send_429(send, request_id, scope)
             return
 
@@ -168,6 +168,10 @@ class GatewayMiddleware:
                 "status": status_holder["status"],
                 "duration_ms": duration_ms,
             }, ensure_ascii=False))
+
+    async def _check_rate_limit(self, scope: dict) -> bool:
+        """限流检查：默认内存固定窗口；生产版子类改写为 Redis 滑动窗口。"""
+        return _rate_limited(scope)
 
     async def _send_401(self, send, request_id: str, scope: dict):
         body = json.dumps(
