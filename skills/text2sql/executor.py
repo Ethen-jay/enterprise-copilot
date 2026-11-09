@@ -19,7 +19,7 @@ import sys
 import time
 from typing import Dict, List
 
-from .config import DB_PATH
+from .config import DB_PATH, USER_DB_PATH
 
 # 查询级超时（毫秒）：防止慢查询把服务挂住
 QUERY_TIMEOUT_MS = 10_000
@@ -39,11 +39,22 @@ def open_readonly_connection() -> sqlite3.Connection:
       - file:...?mode=ro 是 SQLite 官方只读模式，任何写操作直接报错；
       - uri=True 才会识别 file: 协议；
       - 路径统一转成正斜杠，避免 Windows 反斜杠在 URI 里被当转义符。
+
+    用户上传表（xlsx/csv 导入）放在独立的 USER_DB_PATH，以只读方式
+    ATTACH 成 `userdb` 附加库：主库仍只读，附加库也 mode=ro，
+    生成的 SQL 需用 userdb."表名" 限定，守卫/LIMIT/超时路径不变。
     """
     uri = "file:%s?mode=ro" % DB_PATH.resolve().as_posix()
     con = sqlite3.connect(uri, uri=True, timeout=QUERY_TIMEOUT_MS / 1000)
     # 再兜一层：本连接上不允许任何隐式写（触发器之类），双保险
     con.execute("PRAGMA query_only = ON")
+    if USER_DB_PATH.exists():
+        try:
+            user_uri = "file:%s?mode=ro" % USER_DB_PATH.resolve().as_posix()
+            con.execute("ATTACH DATABASE ? AS userdb", (user_uri,))
+        except sqlite3.Error:
+            # 附加库不可用不应阻断业务库问数；用户表查询会自然报 no such table
+            pass
     return con
 
 

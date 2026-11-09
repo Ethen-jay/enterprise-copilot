@@ -72,11 +72,17 @@ def markdown_to_excel(markdown_text: str, output_path: Optional[str] = None) -> 
     return output_path
 
 
-def excel_to_markdown(xlsx_path: str | Path) -> str:
+def excel_to_markdown(
+    xlsx_path: str | Path,
+    include_sheet_titles: bool = False,
+) -> str:
     """Excel → Markdown：单列 sheet 还原为正文段落，多列 sheet 转为表格。
 
     参数:
         xlsx_path: xlsx 文件路径。
+        include_sheet_titles: 为每个 sheet 输出 "## sheet 名" 标题。RAG 入库
+            用它把每个 sheet 切成独立的来源段落；转换技能保持默认 False，
+            产物口径与原来一致。
 
     返回:
         Markdown 字符串。
@@ -103,49 +109,22 @@ def excel_to_markdown(xlsx_path: str | Path) -> str:
         # 与 _parse_xlsx 同一分类规则：单列行是正文，多列行是表格
         max_non_empty = max(len([c for c in r if c.strip()]) for r in table)
         if max_non_empty <= 1:
+            if include_sheet_titles and ws.title:
+                parts.append(f"## {ws.title}")
+                parts.append("")
             for row_cells in table:
                 text = next((c.strip() for c in row_cells if c.strip()), "")
                 if text:
                     parts.append(text)
                     parts.append("")
         else:
+            if include_sheet_titles and ws.title:
+                parts.append(f"## {ws.title}")
+                parts.append("")
             parts.append(_table_to_markdown(table))
             parts.append("")
 
     return "\n".join(parts).strip() + "\n"
-
-
-def docx_tables_to_excel(tables: list[list[list[str]]], output_path: Optional[str] = None) -> str:
-    """DOCX 表格数据 → Excel：每个表格写入一个 sheet。
-
-    参数:
-        tables: 表格列表，每个表格是二维列表。
-        output_path: 输出路径。
-
-    返回:
-        输出 xlsx 路径。
-    """
-    if output_path is None:
-        fd, output_path = tempfile.mkstemp(suffix=".xlsx")
-        os.close(fd)
-    else:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
-    wb = Workbook()
-    wb.remove(wb.active)
-
-    if not tables:
-        ws = wb.create_sheet("空")
-        ws.cell(row=1, column=1, value="未检测到表格")
-    else:
-        for idx, table in enumerate(tables):
-            ws = wb.create_sheet(f"表格{idx + 1}")
-            for row_idx, row in enumerate(table, 1):
-                for col_idx, cell in enumerate(row, 1):
-                    ws.cell(row=row_idx, column=col_idx, value=cell)
-
-    wb.save(output_path)
-    return output_path
 
 
 def _extract_markdown_tables(text: str) -> list[list[list[str]]]:

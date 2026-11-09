@@ -242,27 +242,4 @@ def _diagnose_cause(
 # ============================================================
 
 
-# ============================================================
-# 指标统计
-# ============================================================
 
-def save_metrics(metrics: dict, path: str = "data/output/reflection_metrics.json"):
-    """保存反思指标到 JSON 文件。"""
-    out_path = Path(path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # 读取已有指标
-    existing = []
-    if out_path.exists():
-        try:
-            existing = json.loads(out_path.read_text(encoding="utf-8"))
-            if not isinstance(existing, list):
-                existing = [existing]
-        except Exception:
-            existing = []
-
-    existing.append(metrics)
-    out_path.write_text(
-        json.dumps(existing, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )

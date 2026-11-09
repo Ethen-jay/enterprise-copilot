@@ -19,7 +19,7 @@ from skills.rag_qa.config import (
     TOP_K,
     USE_PARENT_CHILD,
 )
-from skills.rag_qa import document_loader, history_manager, llm_client, reranker, text_splitter
+from skills.rag_qa import document_loader, doc_bridge, history_manager, llm_client, reranker, text_splitter
 from skills.rag_qa.reflection import llm_entailment_check
 from skills.rag_qa.vector_store import (
     DEFAULT_USER,
@@ -149,8 +149,12 @@ def _ingest_pipeline(
     doc_date: Optional[str],
     doc_version: Optional[str],
     cb: Callable[[str], None],
+    doc_extra_meta: Optional[dict] = None,
 ) -> dict:
-    """入库公共管线（ingest 与 ingest_path 在解析出全文后都走这里）。"""
+    """入库公共管线（ingest 与 ingest_path 在解析出全文后都走这里）。
+
+    doc_extra_meta：文档级补充元数据（如格式转换质量指标），随全部块落库。
+    """
     # 1. 分块：Small-to-Big 双层（小块 200 检索 + 父块 1000 喂 LLM）或单层 500
     cb("splitting")
     parents: list[tuple[str, int]] = []
@@ -188,7 +192,9 @@ def _ingest_pipeline(
     cb(f"chunks:{len(chunks)}")
     store = get_store(user)
     # 文档级仲裁字段：doc_date > doc_version > ingested_at（自动生成兜底）
-    doc_meta = build_doc_meta(doc_date=doc_date, doc_version=doc_version)
+    doc_meta = build_doc_meta(
+        doc_date=doc_date, doc_version=doc_version, extra=doc_extra_meta
+    )
     if USE_PARENT_CHILD:
         payload = store.build_parent_child_payload(
             parents, child_records, source=filename, pages=pages,
@@ -252,23 +258,36 @@ def ingest(
     cb = progress_callback or (lambda _: None)
 
     # 1. 解析纯文本（PDF 额外记录每页起始偏移；扫描页自动 OCR 兜底）
+    #    docx/xlsx/html 在解析前同进程调用 doc_agent 的 converter 转文本，
+    #    用户无需先手动转 md；source 仍是原始文件名。
     cb("parsing")
     ext = Path(filename).suffix.lower()
+    conv_meta: Optional[dict] = None
     try:
         if ext == ".pdf":
             pages = document_loader.extract_pdf_pages_from_bytes(file_bytes, progress_callback=cb)
             text, page_starts = document_loader.build_page_text(pages)
+        elif ext in doc_bridge.CONVERTIBLE_EXTS:
+            text, conv_meta = doc_bridge.convert_bytes_to_markdown(file_bytes, filename, cb)
+            page_starts = None
         else:
             text = document_loader.extract_text(file_bytes, filename)
             page_starts = None
+    except doc_bridge.ConversionError as e:
+        logger.warning("文档转换失败: %s, %s", filename, e)
+        raise DocumentParseError(str(e)) from e
     except Exception as e:
+        if isinstance(e, ValueError):
+            # 解析层的可读错误（如“PDF 已加密”“格式不支持”）直接上抛，由接口映射为 400
+            raise
         logger.warning("文档解析失败: %s", filename, exc_info=True)
         raise DocumentParseError(
             f"文档解析失败：{filename}（文件可能为空、已损坏或扩展名与实际格式不符）"
         ) from e
 
     return _ingest_pipeline(
-        text, page_starts, filename, user, replace, doc_date, doc_version, cb
+        text, page_starts, filename, user, replace, doc_date, doc_version, cb,
+        doc_extra_meta=conv_meta,
     )
 
 
@@ -288,23 +307,35 @@ def ingest_path(
     cb = progress_callback or (lambda _: None)
 
     # 1. 从磁盘解析纯文本（PDF 额外记录每页起始偏移；扫描页自动 OCR 兜底）
+    #    docx/xlsx/html 同进程走 doc_agent converter，不落中间产物文件
     cb("parsing")
     ext = Path(filename).suffix.lower()
+    conv_meta: Optional[dict] = None
     try:
         if ext == ".pdf":
             pages = document_loader.extract_pdf_pages_from_path(path, progress_callback=cb)
             text, page_starts = document_loader.build_page_text(pages)
+        elif ext in doc_bridge.CONVERTIBLE_EXTS:
+            text, conv_meta = doc_bridge.convert_path_to_markdown(path, filename, cb)
+            page_starts = None
         else:
             text = document_loader.extract_text_from_path(path, filename)
             page_starts = None
+    except doc_bridge.ConversionError as e:
+        logger.warning("文档转换失败: %s, %s", filename, e)
+        raise DocumentParseError(str(e)) from e
     except Exception as e:
+        if isinstance(e, ValueError):
+            # 解析层的可读错误（如“PDF 已加密”“格式不支持”）直接上抛，由接口映射为 400
+            raise
         logger.warning("文档解析失败: %s", filename, exc_info=True)
         raise DocumentParseError(
             f"文档解析失败：{filename}（文件可能为空、已损坏或扩展名与实际格式不符）"
         ) from e
 
     return _ingest_pipeline(
-        text, page_starts, filename, user, replace, doc_date, doc_version, cb
+        text, page_starts, filename, user, replace, doc_date, doc_version, cb,
+        doc_extra_meta=conv_meta,
     )
 
 
@@ -551,6 +582,8 @@ async def chat(
     user: str = DEFAULT_USER,
     progress_cb: Optional[Callable[[dict], None]] = None,
     retrieval_query: Optional[str] = None,
+    observer: Optional[dict] = None,
+    ablation: Optional[dict] = None,
 ) -> dict:
     """问答流程：混合检索（小块）→ 重排 → 阈值拒答 → 父块回溯 → 拼 Prompt
     → LLM（含 Prompt Injection 标记）→ 蕴含裁判反思（混合重试）。
@@ -566,6 +599,11 @@ async def chat(
             不参与任何业务判断（默认 None 时行为与改前完全一致）。
         retrieval_query: 可选的独立问句（指代消解/查询改写结果）。仅用于检索与
             重排；答案事实依据仍只来自检索到的原文，历史内容不作为事实来源。
+        observer: 可选观测字典（评测/链路观测用）。仅写入检索与重试信息，
+            不参与任何业务判断；为 None 时行为与改前完全一致。
+        ablation: 可选消融开关（仅评测用）。支持的键：hybrid / rerank /
+            parent_child / threshold / reflection，缺省均为 True（线上语义）。
+            与线上默认值一致时行为完全不变。
 
     返回:
         {
@@ -576,6 +614,12 @@ async def chat(
     """
     store = get_store(user)
     cb = progress_cb or (lambda _: None)
+    abl = ablation or {}
+    use_hybrid = bool(abl.get("hybrid", True))
+    use_rerank = bool(abl.get("rerank", True))
+    use_parent_child = bool(abl.get("parent_child", True)) and USE_PARENT_CHILD
+    use_threshold = bool(abl.get("threshold", True))
+    use_reflection = bool(abl.get("reflection", True))
 
     # 检索问句：有改写结果就用改写版（指代消解后），否则用原问题。
     # 注意：改写只服务于检索/重排，历史内容不会进入答案事实依据。
@@ -603,11 +647,12 @@ async def chat(
         vector_candidates = store.similarity_search_children(search_query, k=retrieve_k)
 
         bm25_candidates: List = []
-        bm25_result = _get_bm25(user)
-        if bm25_result is not None:
-            bm25_retriever, all_docs = bm25_result
-            bm25_top = bm25_retriever.search(search_query, k=retrieve_k)
-            bm25_candidates = [all_docs[idx] for idx, _ in bm25_top]
+        if use_hybrid:
+            bm25_result = _get_bm25(user)
+            if bm25_result is not None:
+                bm25_retriever, all_docs = bm25_result
+                bm25_top = bm25_retriever.search(search_query, k=retrieve_k)
+                bm25_candidates = [all_docs[idx] for idx, _ in bm25_top]
 
         # 合并去重：按 (source, chunk_index) 去重
         seen_keys: set = set()
@@ -628,15 +673,32 @@ async def chat(
             "stage": "reranking",
             "message": f"已完成检索，命中 {len(candidates)} 片，重排中…",
         })
-        docs = await reranker.rerank(search_query, candidates, top_k=TOP_K)
+        if use_rerank:
+            docs = await reranker.rerank(search_query, candidates, top_k=TOP_K)
+        else:
+            docs = candidates[:TOP_K]
+        if observer is not None:
+            observer["retrieved"] = [
+                {
+                    "source": d.metadata.get("source"),
+                    "chunk": d.metadata.get("chunk_index"),
+                    "rerank_score": d.metadata.get("rerank_score"),
+                }
+                for d in docs
+            ]
+            observer["retrieve_k"] = retrieve_k
+            observer["attempts"] = attempt + 1
 
         # 3. 阈值拒答：top_k 分数全低于阈值时跳过 LLM 直接拒答（省一次 LLM 调用）
-        refusal = _threshold_refusal(docs)
+        refusal = _threshold_refusal(docs) if use_threshold else None
         if refusal:
             logger.info(
                 "RAG 引擎快拒答: reason=%s, max_score=%s (阈值=%.2f)",
                 refusal["reason"], refusal["max_score"], RELEVANCE_THRESHOLD,
             )
+            if observer is not None:
+                observer["refused"] = True
+                observer["refusal_reason"] = refusal["reason"]
             return {
                 "answer": NO_ANSWER_TEXT,
                 "citations": [],
@@ -653,7 +715,7 @@ async def chat(
         #    flat（单层/历史数据）没有 parent_id，直接用自身作为上下文。
         #    引用与拒答判断仍基于命中的小块/单层块。
         context_docs = docs
-        if USE_PARENT_CHILD:
+        if use_parent_child:
             parent_ids = list(dict.fromkeys(  # 去重保序：多个小块命中同一父块只取一次
                 d.metadata["parent_id"] for d in docs if d.metadata.get("parent_id")
             ))
@@ -706,7 +768,10 @@ async def chat(
 
         # 7. 反思校验（LLM 蕴含裁判，校验 LLM 实际看到的上下文）
         #    用改写后的独立问句做校验，避免裁判被"它/这些"等指代干扰
-        reflection = await llm_entailment_check(search_query, answer, context_docs)
+        if use_reflection:
+            reflection = await llm_entailment_check(search_query, answer, context_docs)
+        else:
+            reflection = {"passed": True, "skipped": True}
 
         log_entry = {
             "attempt": attempt,
@@ -724,6 +789,9 @@ async def chat(
 
         if reflection["passed"]:
             # 校验通过，返回结果
+            if observer is not None:
+                observer["refused"] = False
+                observer["reflection_passed"] = True
             return {
                 "answer": answer,
                 "citations": citations,
@@ -780,6 +848,9 @@ async def chat(
             break
 
     # 重试失败或不可重试，返回最终结果
+    if observer is not None:
+        observer["refused"] = False
+        observer["reflection_passed"] = False
     return {
         "answer": answer,
         "citations": citations,

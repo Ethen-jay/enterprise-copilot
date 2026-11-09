@@ -149,6 +149,8 @@ def parse_metrics(file_path: str | Path, fmt: str) -> dict:
         return _parse_html(path)
     elif fmt == "xlsx":
         return _parse_xlsx(path)
+    elif fmt == "csv":
+        return _parse_csv(path)
     elif fmt in ("txt", "text"):
         return _parse_text(path.read_text(encoding="utf-8"))
     else:
@@ -503,6 +505,23 @@ def _parse_xlsx(path: Path) -> dict:
         "table_row_count": table_row_count,
         "image_count": 0,
         "keywords": extract_keywords(" ".join(all_text)),
+    }
+
+
+def _parse_csv(path: Path) -> dict:
+    """CSV: 首行为表头，其余为数据行；全部按表格行计（与 Markdown 表格口径一致）。"""
+    import csv
+    import io
+
+    rows = [
+        row for row in csv.reader(io.StringIO(path.read_text(encoding="utf-8-sig")))
+        if any(cell.strip() for cell in row)
+    ]
+    return {
+        "paragraph_count": 0,
+        "table_row_count": len(rows),
+        "image_count": 0,
+        "keywords": extract_keywords(" ".join(" ".join(row) for row in rows)),
     }
 
 

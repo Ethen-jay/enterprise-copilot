@@ -121,14 +121,17 @@ def _call_llm(settings, system: str, user_content: str) -> str:
     return resp.choices[0].message.content or ""
 
 
-def rewrite_question(question: str, turns: list) -> str:
+def rewrite_question(question: str, turns: list, last_sql: str = "") -> str:
     """用最近几轮把"再按部门分组""只看上个月"等追问改写成独立问句。
+
+    传入 last_sql 时，改写提示词会要求：对上一轮查询做增量修改（换排序/TopN 等）
+    必须写明原表、筛选、聚合与排序，避免只写"刚才那条 SQL"。
 
     只用于生成新 SQL 的输入，不改写结果、不绕过守卫；失败/超时回退原问题。
     """
     from common import chat_memory
 
-    prompt = chat_memory.build_condense_prompt(question, turns, "sql")
+    prompt = chat_memory.build_condense_prompt(question, turns, "sql", last_sql=last_sql)
     try:
         raw = _call_llm(
             get_llm_settings(),

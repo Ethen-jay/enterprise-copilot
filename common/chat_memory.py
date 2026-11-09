@@ -276,7 +276,9 @@ def format_turns_for_rewrite(turns: List[dict], scope: str, max_chars: int = 300
         if scope == "sql":
             lines.append("第%d轮 用户：%s" % (i, q))
             if extra.get("sql"):
-                lines.append("第%d轮 SQL：%s" % (i, str(extra["sql"])[:500]))
+                # SQL 追问常修改 ORDER BY / LIMIT，截断会把尾部结构切掉，
+                # 这里保留足够长度（仅用于改写提示词，不落记忆、不对外展示）
+                lines.append("第%d轮 SQL：%s" % (i, str(extra["sql"])[:2000]))
             if extra.get("tables"):
                 lines.append("第%d轮 表：%s" % (i, "、".join(map(str, extra["tables"]))[:200]))
             if extra.get("error"):
@@ -294,17 +296,49 @@ def format_turns_for_rewrite(turns: List[dict], scope: str, max_chars: int = 300
     return text[-max_chars:]
 
 
-def build_condense_prompt(question: str, turns: List[dict], scope: str) -> str:
-    """构造"把追问改写成独立问句"的提示词；只允许改写问句，不允许补充事实。"""
+# SQL 增量修改意图：对上一轮查询换排序 / 换返回条数 / 加 TopN 等
+_SQL_MODIFY_RE = re.compile(
+    r"(换成|换为|改成|改为|改按|再按|只(?:要|看|保留|返回|取|统计)|"
+    r"排序|降序|升序|倒序|"
+    r"(?:加|增加|再加|加上|加个)(?:一?个)?\s*"
+    r"(?:top\s*\d+|前\s*\d+|limit\s*\d+|\d+\s*(?:条|行|名|个|位))|"
+    r"top\s*\d+|前\s*\d+\s*(?:条|行|名|个|位)|limit\s*\d+|"
+    r"去掉|删掉|去掉.{0,6}条件)"
+)
+
+
+def is_sql_modification(question: str) -> bool:
+    """是否在对上一轮查询做增量修改（换排序、换条数、加 TopN 等）。"""
+    q = (question or "").strip()
+    return bool(q) and bool(_SQL_MODIFY_RE.search(q))
+
+
+def build_condense_prompt(question: str, turns: List[dict], scope: str,
+                          last_sql: str = "") -> str:
+    """构造"把追问改写成独立问句"的提示词；只允许改写问句，不允许补充事实。
+
+    last_sql：仅 SQL 技能传入。追问是对上一轮查询的增量修改时，把上一轮 SQL
+    作为改写基准，要求改写结果明确写出原表/筛选/聚合/排序，避免只写“刚才那条”。
+    RAG/文档技能不传该参数，提示词与原有行为逐字一致。
+    """
     context = format_turns_for_rewrite(turns, scope)
+    sql_block = ""
+    if scope == "sql" and last_sql:
+        sql_block = (
+            "\n【上一轮 SQL（增量修改的基准，必须保留其结构）】\n%s\n"
+            "4. 若最新提问是对上一轮查询的增量修改（换成/改成/只要/排序/加 Top N/"
+            "改返回条数），改写结果必须写明上一轮查询的表、筛选条件、聚合口径与排序字段，"
+            "再说明本次修改；不得只写“刚才那条 SQL”。\n" % str(last_sql)[:2000]
+        )
     return (
         "你是问句改写器。请把用户的最新提问改写成一句不依赖上文的独立问句，"
         "补全其中的代词、省略和指代对象。\n"
         "硬性要求：\n"
         "1. 只输出改写后的问句，不要解释、不要引号、不要前缀；\n"
         "2. 不得添加上下文里没有出现的事实、数字或结论；\n"
-        "3. 若无法确定指代对象，原样输出用户最新提问。\n\n"
-        "【最近对话】\n%s\n\n【最新提问】\n%s\n\n【改写结果】" % (context, question)
+        "3. 若无法确定指代对象，原样输出用户最新提问。\n"
+        "%s\n【最近对话】\n%s\n\n【最新提问】\n%s\n\n【改写结果】"
+        % (sql_block, context, question)
     )
 
 
@@ -373,11 +407,3 @@ def meta_answer(question: str, turns: List[dict]) -> Tuple[str, bool]:
         return "（来自对话记忆）你在本会话的第一个问题是：「%s」" % questions[0], True
     # last / restate
     return "（来自对话记忆）你上一个问题是：「%s」" % questions[-1], True
-
-
-def memory_preamble(turns: List[dict]) -> str:
-    """给普通问答用的极简记忆提示（只帮助指代，不注入事实）。"""
-    if not turns:
-        return ""
-    last = turns[-1]
-    return "上一轮用户问的是：「%s」" % (last.get("question") or "")

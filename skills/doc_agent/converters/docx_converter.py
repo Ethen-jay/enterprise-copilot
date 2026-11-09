@@ -14,11 +14,29 @@ from typing import Optional
 
 from docx import Document
 from docx.oxml.ns import qn
+from docx.text.paragraph import Paragraph
 
 logger = logging.getLogger(__name__)
 
 # Windows 系统中文字体路径
 _CN_FONT = "C:/Windows/Fonts/msyh.ttc"
+
+# Word 内置标题样式：英文 "Heading 1" / 中文 "标题 1"
+_HEADING_STYLE_RE = re.compile(r"^(?:heading|标题)\s*([1-6])$", re.IGNORECASE)
+
+
+def _heading_prefix(paragraph: Paragraph) -> str:
+    """按段落样式返回 Markdown 标题前缀（非标题段落返回空串）。
+
+    保留原文档的标题层级：Heading 1 → "#"，Heading 3 → "###"。
+    只认内置标题样式，避免把正文字体样式误判成标题。
+    """
+    try:
+        style_name = (paragraph.style.name or "").strip()
+    except Exception:
+        return ""
+    match = _HEADING_STYLE_RE.match(style_name)
+    return "#" * int(match.group(1)) + " " if match else ""
 
 # 能落成独立图片文件、并被 pandoc / fpdf / 浏览器接受的图片格式。
 # EMF/WMF 是矢量图，Pillow 与 fpdf2 都不能渲染，直接跳过并记日志。
@@ -52,6 +70,8 @@ def docx_to_markdown(docx_path: str | Path, assets_dir: Optional[str | Path] = N
         tag = block.tag.split("}")[-1] if "}" in block.tag else block.tag
 
         if tag == "p":
+            # 按段落样式保留标题层级（Heading 1 → "#"），正文段落前缀为空
+            prefix = _heading_prefix(Paragraph(block, doc))
             # 按 XML 顺序遍历：文本 run 与图片 run 交替出现时保持阅读顺序
             buffer: list[str] = []
             for node in block.iter():
@@ -63,7 +83,7 @@ def docx_to_markdown(docx_path: str | Path, assets_dir: Optional[str | Path] = N
 
                 text = "".join(buffer).strip()
                 if text:
-                    parts.append(text)
+                    parts.append(prefix + text)
                 buffer = []
 
                 ref = _save_docx_image(doc, node, assets_path, image_seq + 1)
@@ -73,7 +93,7 @@ def docx_to_markdown(docx_path: str | Path, assets_dir: Optional[str | Path] = N
 
             text = "".join(buffer).strip()
             if text:
-                parts.append(text)
+                parts.append(prefix + text)
         elif tag == "tbl":
             # 表格
             table = _extract_table(block)
@@ -299,20 +319,6 @@ def _fit_docx_images(docx_path: str | Path) -> None:
 
     if changed:
         doc.save(str(docx_path))
-
-
-def docx_to_pdf(docx_path: str | Path, output_path: Optional[str] = None) -> str:
-    """DOCX → PDF：先提取为 Markdown 文本，再用 fpdf2 生成 PDF。
-
-    参数:
-        docx_path: DOCX 文件路径。
-        output_path: 输出路径，None 时用临时文件。
-
-    返回:
-        输出 PDF 路径。
-    """
-    md_text = docx_to_markdown(docx_path)
-    return markdown_to_pdf(md_text, output_path)
 
 
 def markdown_to_pdf(

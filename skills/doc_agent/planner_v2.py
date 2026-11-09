@@ -7,31 +7,20 @@
 4. LLM 仅在指令模糊时辅助解析
 """
 
-import json
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 from skills.doc_agent.planner import (
     FORMAT_ALIASES,
     OPTION_KEYWORDS,
     SUPPORTED_FORMATS,
-    TARGET_KEYWORDS,
     _detect_options,
     _detect_source_format,
     _detect_target_format,
 )
 
 logger = logging.getLogger("planner_v2")
-
-
-@dataclass
-class TaskStep:
-    """计划中的一个步骤。"""
-    action: str          # "parse" | "convert" | "polish" | "summarize" | "validate" | "reflect"
-    tool: str = ""      # 使用的工具/模块名
-    params: dict = field(default_factory=dict)
-    description: str = ""
 
 
 @dataclass
@@ -233,74 +222,3 @@ def _expected_output(target: str) -> str:
         "txt": "text_file",
     }.get(target, "file")
 
-
-# ============================================================
-# LLM 辅助（仅在指令模糊时调用）
-# ============================================================
-
-async def llm_parse_instruction(instruction: str, filename: str) -> dict:
-    """LLM 辅助解析模糊指令。
-
-    仅在规则路由无法确定目标格式时调用。
-    """
-    from skills.doc_agent.llm_client import _get_llm
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    prompt = f"""请解析以下文档转换指令，提取结构化信息。
-
-文件名: {filename}
-指令: {instruction}
-
-请输出 JSON:
-{{"task_type": "convert", "source_format": "...", "target_format": "...", "options": {{"keep_table": false, "polish": false, "summarize": false}}}}
-
-注意：
-- target_format 只能是: markdown, pdf, docx, html, xlsx, txt
-- 如果指令没有明确目标格式，默认 markdown
-"""
-
-    try:
-        llm = _get_llm()
-        messages = [
-            SystemMessage(content="你是一个文档转换指令解析器。只输出 JSON。"),
-            HumanMessage(content=prompt),
-        ]
-        resp = await llm.ainvoke(messages)
-        raw = resp.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        return json.loads(raw.strip())
-    except Exception as e:
-        logger.warning("LLM 解析指令失败: %s", e)
-        return {}
-
-
-async def create_plan_with_llm(instruction: str, filename: str) -> TaskPlan:
-    """规则路由 + LLM 辅助。
-
-    先用规则路由，如果无法确定目标格式，再调 LLM。
-    """
-    plan = create_plan(instruction, filename)
-
-    # 如果规则路由无法确定目标格式（返回了默认 markdown），且指令看起来不像转 markdown
-    # 尝试用 LLM 辅助
-    if plan.target_format == "markdown":
-        instruction_lower = instruction.lower()
-        has_target = any(
-            kw in instruction_lower
-            for kws in TARGET_KEYWORDS.values()
-            for kw in kws
-        )
-        if not has_target:
-            logger.info("指令模糊，尝试 LLM 辅助解析...")
-            llm_result = await llm_parse_instruction(instruction, filename)
-            if llm_result.get("target_format") and llm_result["target_format"] != "markdown":
-                plan.target_format = llm_result["target_format"]
-                plan.tools = _select_tools(plan.source_format, plan.target_format, plan.options)
-                plan.steps = _build_steps(plan.source_format, plan.target_format, plan.options)
-                plan.expected_output = _expected_output(plan.target_format)
-                logger.info("LLM 辅助解析: target=%s", plan.target_format)
-
-    return plan

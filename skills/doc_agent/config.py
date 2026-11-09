@@ -11,14 +11,12 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 # ===== 路径 =====
 DATA_DIR = PROJECT_ROOT / "data"
-UPLOADS_DIR = DATA_DIR / "uploads"
-TMP_DIR = DATA_DIR / "tmp"
 OUTPUT_DIR = DATA_DIR / "output"
 MEMORY_DIR = DATA_DIR / "memory"  # 记忆模块 SQLite 持久化目录
 
 
 def ensure_dirs() -> None:
-    for d in (DATA_DIR, UPLOADS_DIR, TMP_DIR, OUTPUT_DIR, MEMORY_DIR):
+    for d in (DATA_DIR, OUTPUT_DIR, MEMORY_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

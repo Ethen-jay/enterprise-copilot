@@ -83,14 +83,11 @@ VECTOR_SPACE = _get("VECTOR_SPACE", "cosine")  # cosine / l2 / ip
 # ===== 路径 =====
 DATA_DIR = PROJECT_ROOT / _get("DATA_DIR", "data")
 CHROMA_DIR = PROJECT_ROOT / _get("CHROMA_DIR", "data/chroma")
-UPLOADS_DIR = PROJECT_ROOT / _get("UPLOADS_DIR", "data/uploads")
-TMP_DIR = PROJECT_ROOT / _get("TMP_DIR", "data/tmp")
-OUTPUT_DIR = PROJECT_ROOT / _get("OUTPUT_DIR", "data/output")
 
 
 def ensure_dirs() -> None:
     """确保所有数据目录存在。"""
-    for d in (DATA_DIR, CHROMA_DIR, UPLOADS_DIR, TMP_DIR, OUTPUT_DIR):
+    for d in (DATA_DIR, CHROMA_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

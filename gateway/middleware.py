@@ -29,7 +29,10 @@ from common.config import GATEWAY_API_KEYS
 logger = logging.getLogger("gateway.audit")
 
 # 认证白名单：这些路径无需令牌（登录页 / 健康检查 / 接口文档 / 静态资源）
-_PUBLIC_PATHS = {"/", "/health", "/api/health", "/docs", "/openapi.json", "/redoc", "/login"}
+_PUBLIC_PATHS = {
+    "/", "/health", "/api/health", "/rag/health", "/doc/health",
+    "/docs", "/openapi.json", "/redoc", "/login",
+}
 _PUBLIC_PREFIXES = ("/static/", "/favicon")
 
 # 限流配置：窗口 60 秒内，同一 IP 最多发起 RATE_LIMIT_MAX 次写操作

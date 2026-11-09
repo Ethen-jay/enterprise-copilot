@@ -1,0 +1,252 @@
+# RAG 评测集
+# 说明：
+#   - expected_sources：期望命中的文档（任一命中即算命中；用于 Recall@K 与引用命中率）
+#   - key_points：答案必须覆盖的要点；同一要点内用「或」分隔等价写法；数字按 1% 相对误差核对
+#   - should_refuse：该问题是否应当拒答
+#   - 题库内容全部来自已入库文档（中文测试文档.md / benchmark_test.md / output_docx_to_markdown.md）
+meta:
+  user: Ethen
+  top_k: 3
+  note: "文档名按 basename 匹配；Retrieval Recall@K 与引用命中率均按文档级判定"
+
+cases:
+  # ---------- 北斗卫星导航系统（中文测试文档.md / benchmark_test.md） ----------
+  - id: R01
+    question: 北斗卫星导航系统是继哪两个系统之后的第三个成熟的卫星导航系统？
+    expected_sources: [中文测试文档.md, benchmark_test.md]
+    key_points: [GPS, GLONASS, 第三]
+    should_refuse: false
+  - id: R02
+    question: 北斗系统的建设是从哪一年开始的？
+    expected_sources: [中文测试文档.md]
+    key_points: [1994]
+    should_refuse: false
+  - id: R03
+    question: 北斗一号系统的覆盖范围和定位体制是什么？
+    expected_sources: [中文测试文档.md]
+    key_points: [中国本土, 有源定位]
+    should_refuse: false
+  - id: R04
+    question: 北斗二号系统的覆盖范围和定位能力是什么？
+    expected_sources: [中文测试文档.md]
+    key_points: [亚太, 无源]
+    should_refuse: false
+  - id: R05
+    question: 北斗三号系统什么时候正式开通全球服务？
+    expected_sources: [中文测试文档.md, benchmark_test.md]
+    key_points: [2020年7月31日]
+    should_refuse: false
+  - id: R06
+    question: 截至2020年，北斗三号系统共发射了多少颗卫星？
+    expected_sources: [中文测试文档.md]
+    key_points: [30]
+    should_refuse: false
+  - id: R07
+    question: 北斗三号的混合星座里 MEO、GEO、IGSO 卫星各有多少颗？
+    expected_sources: [中文测试文档.md]
+    key_points: [24, GEO, IGSO]
+    should_refuse: false
+  - id: R08
+    question: 北斗系统在全球范围的定位精度是多少？
+    expected_sources: [中文测试文档.md]
+    key_points: [水平10米, 高程10米]
+    should_refuse: false
+  - id: R09
+    question: 北斗系统在亚太地区的定位精度是多少？
+    expected_sources: [中文测试文档.md]
+    key_points: [水平5米, 高程5米]
+    should_refuse: false
+  - id: R10
+    question: 北斗系统主要应用在哪些领域？请至少举三个。
+    expected_sources: [中文测试文档.md, benchmark_test.md]
+    key_points: [交通运输, 海洋渔业, 救灾减灾]
+    should_refuse: false
+  - id: R11
+    question: 与 GPS 相比，北斗系统有哪些特色优势？
+    expected_sources: [中文测试文档.md]
+    key_points: [短报文, 三频, 亚太]
+    should_refuse: false
+  - id: R12
+    question: 北斗三号最后一颗全球组网卫星是什么时候、在哪里发射的？
+    expected_sources: [中文测试文档.md]
+    key_points: [2020年6月23日, 西昌]
+    should_refuse: false
+  - id: R13
+    question: 北斗的短报文通信功能是什么？为什么说它是独特优势？
+    expected_sources: [中文测试文档.md, benchmark_test.md]
+    key_points: [卫星, 简短文字, 不具备]
+    should_refuse: false
+  - id: R14
+    question: 北斗系统的地面段由哪些部分组成？
+    expected_sources: [benchmark_test.md, 中文测试文档.md]
+    key_points: [主控站, 注入站, 监测站]
+    should_refuse: false
+  - id: R15
+    question: 北斗系统的用户段包括哪些内容？
+    expected_sources: [benchmark_test.md, 中文测试文档.md]
+    key_points: [芯片, 模块, 终端]
+    should_refuse: false
+  - id: R16
+    question: 相比北斗二号，北斗三号新增了哪些技术或功能？
+    expected_sources: [benchmark_test.md, 中文测试文档.md]
+    key_points: [星间链路, 原子钟, 国际搜救]
+    should_refuse: false
+  - id: R17
+    question: 北斗系统的建设遵循哪些原则？
+    expected_sources: [benchmark_test.md, 中文测试文档.md]
+    key_points: [自主, 开放, 兼容, 渐进]
+    should_refuse: false
+  - id: R18
+    question: 北斗地基增强系统能提供什么级别的定位服务？
+    expected_sources: [benchmark_test.md]
+    key_points: [厘米级, 毫米级]
+    should_refuse: false
+  - id: R19
+    question: 北斗系统的定位、测速和授时精度分别优于多少？
+    expected_sources: [benchmark_test.md]
+    key_points: [10米, 0.2米/秒, 20纳秒]
+    should_refuse: false
+  - id: R20
+    question: 北斗系统与 GPS、GLONASS、Galileo 之间是什么关系？
+    expected_sources: [benchmark_test.md, 中文测试文档.md]
+    key_points: [兼容, 互操作]
+    should_refuse: false
+
+  # ---------- IC 载板（output_docx_to_markdown.md） ----------
+  - id: R21
+    question: IC 载板在产业链中处于什么位置、起到什么作用？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [裸芯片, 主板, 封装]
+    should_refuse: false
+  - id: R22
+    question: IC 载板承担哪三项核心功能？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [电气互连, 机械支撑, 散热]
+    should_refuse: false
+  - id: R23
+    question: FC-BGA 载板的典型层数是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [6–24或6-24或24]
+    should_refuse: false
+  - id: R24
+    question: FC-BGA 载板典型的线宽/线距是多少微米？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [5–15或5-15]
+    should_refuse: false
+  - id: R25
+    question: 2025 年封装基板在封装材料市场中的占比是多少？BT 类和 ABF 类各占多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [56.43, 54.06, 45.94]
+    should_refuse: false
+  - id: R26
+    question: IC 载板与普通 PCB 硬板的典型线宽/线距分别是什么量级？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [8–40或8-40, 50–100或50-100]
+    should_refuse: false
+  - id: R27
+    question: 减成法的主要缺点是什么？用什么指标描述侧蚀？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [侧蚀, 蚀刻因子]
+    should_refuse: false
+  - id: R28
+    question: 半加成法（SAP）的四个主要步骤是什么？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [种子层, 图形电镀, 闪蚀]
+    should_refuse: false
+  - id: R29
+    question: SAP 与 mSAP 在种子层上有什么区别？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [0.5–2或0.5-2, 1.5–5或1.5-5]
+    should_refuse: false
+  - id: R30
+    question: SAP 和 mSAP 可稳定做到的最小线宽/线距分别是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [15–20或15-20, 5–15或5-15]
+    should_refuse: false
+  - id: R31
+    question: 有芯板和无芯板的典型总厚度分别是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [0.2–1.5或0.2-1.5, 0.1–0.4或0.1-0.4]
+    should_refuse: false
+  - id: R32
+    question: 载板制造可以分成哪三个阶段？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [前段, 增层, 后段]
+    should_refuse: false
+  - id: R33
+    question: 增层激光盲孔的典型孔径是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [25–50或25-50]
+    should_refuse: false
+  - id: R34
+    question: 除胶渣通常分为哪三步？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [溶胀, 高锰酸钾, 中和]
+    should_refuse: false
+  - id: R35
+    question: 化学沉铜的种子层厚度，普通 PTH 与 SAP 分别是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [0.2–0.5或0.2-0.5, 1–2或1-2]
+    should_refuse: false
+  - id: R36
+    question: 填孔电镀的典型电流密度和时间是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [2–5或2-5, 20–40或20-40]
+    should_refuse: false
+  - id: R37
+    question: ABF 压合与固化的典型温度、压力和时间是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [90–120或90-120或110, 180, 0.3–0.5或0.3-0.5]
+    should_refuse: false
+  - id: R38
+    question: 载板阻焊的最小坝宽大约是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [25]
+    should_refuse: false
+  - id: R39
+    question: ENEPIG 表面处理的镍、钯、金层典型厚度是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [4–7或4-7, 0.1–0.3或0.1-0.3, 0.03–0.3或0.03-0.3]
+    should_refuse: false
+  - id: R40
+    question: OSP 表面处理的存储期大概多久？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [3–6或3-6]
+    should_refuse: false
+  - id: R41
+    question: 裸载板、封装体、板级三个层级的典型允许翘曲是多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [30, 50, 100]
+    should_refuse: false
+  - id: R42
+    question: 载板级 AOI 的国产份额现在是多少，预计 2030 年能到多少？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [20–30或20-30, 45–55或45-55]
+    should_refuse: false
+  - id: R43
+    question: 载板的标准包装流程包括哪些关键环节？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [防潮袋, 真空, 干燥剂]
+    should_refuse: false
+  - id: R44
+    question: 增层循环通常每面重复多少次？高层数产品呢？
+    expected_sources: [output_docx_to_markdown.md]
+    key_points: [2–5或2-5, 8–10或8-10]
+    should_refuse: false
+
+  # ---------- 应拒答（知识库无依据） ----------
+  - id: R45
+    question: 公司食堂几点开门？
+    expected_sources: []
+    key_points: []
+    should_refuse: true
+  - id: R46
+    question: 帮我写一首关于春天的诗。
+    expected_sources: []
+    key_points: []
+    should_refuse: true
+  - id: R47
+    question: 2027 年世界杯的冠军会是谁？
+    expected_sources: []
+    key_points: []
+    should_refuse: true

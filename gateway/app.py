@@ -30,7 +30,7 @@ from common.auth import (
     verify_credentials,
 )
 from gateway.middleware import GatewayMiddleware
-from skills.text2sql.service import router as sql_router
+from skills.text2sql.service import router as sql_router, health as sql_health
 from skills.rag_qa.service import router as rag_router
 from skills.doc_agent.service import router as doc_router
 
@@ -97,12 +97,16 @@ app.include_router(doc_router, prefix="/doc")      # /doc/convert /doc/download 
 # 统一健康检查：聚合三技能子状态
 # ----------------------------------------------------------------------
 @app.get("/api/health", tags=["gateway"])
-def api_health():
+def api_health(probe: bool = False):
+    sql = sql_health(probe=probe)
     return {
-        "status": "ok",
+        "status": sql.get("status", "ok"),
         "gateway": "enterprise-copilot",
         "auth_enabled": True,  # 身份一律由登录签发的 JWT 派生
         "password_required": password_required(),
+        # probe=1 时附带 LLM 连通性探测结果，避免“配置齐全但地址不可达”的假绿
+        "llm": sql.get("llm"),
+        "database": sql.get("database"),
         "skills": {
             "text2sql": "/ask",
             "rag_qa": "/rag/chat",

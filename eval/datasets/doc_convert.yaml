@@ -1,0 +1,43 @@
+# 文档转换评测集（36 组合 + 边界样例）
+# 组合：6 种源格式 × 6 种目标格式
+# 指标：
+#   - 通过率：转换成功 + validator 通过 + 内容保留率 ≥ min_retention
+#   - 偏差分布：content_deviation = 1 - 关键词保留率，按区间统计
+# 判定完全基于规则：从输出文件抽取文本，检查预置关键词是否保留，不做人工打分
+meta:
+  sources: [markdown, txt, html, docx, xlsx, pdf]
+  targets: [markdown, txt, html, docx, xlsx, pdf]
+  keywords:
+    - ALPHA-7731
+    - BRAVO-2048
+    - CHARLIE-4096
+    - TS-900
+    - 铜厚18微米
+  min_retention: 0.8
+
+edge_cases:
+  - id: X01
+    name: 空 Markdown（现有行为：生成空文档，不报错）
+    fixture: empty_md
+    instruction: 转换为 docx
+    expect: ok
+  - id: X02
+    name: 旧版 doc 改名成 docx
+    fixture: legacy_docx
+    instruction: 转换为 txt
+    expect: error
+  - id: X03
+    name: 不支持的扩展名 .bin
+    fixture: unsupported_bin
+    instruction: 转换为 docx
+    expect: error
+  - id: X04
+    name: 中文文件名 + 空格
+    fixture: unicode_name
+    instruction: 转换为 docx
+    expect: ok
+  - id: X05
+    name: CSV 源文件（现有转换器支持）
+    fixture: csv_supported
+    instruction: 转换为 docx
+    expect: ok

@@ -25,6 +25,40 @@ logger = logging.getLogger("agent_app")
 # 路由抽象成 APIRouter：独立启动（本文件 app）与 gateway 统一入口复用同一份
 router = APIRouter()
 
+# 支持的源文件后缀（与 planner.SUPPORTED_FORMATS 对齐）。
+# 未知后缀直接拒绝：历史上会退化成“按 UTF-8 文本读取”，把 .bin 等二进制文件
+# 当文本转换成功，产出垃圾文档。
+_SUPPORTED_SUFFIXES = {
+    ".pdf", ".docx", ".doc", ".html", ".htm", ".xlsx", ".xls", ".csv",
+    ".txt", ".md", ".markdown",
+}
+
+
+def _validate_source_file(filename: str) -> None:
+    """校验源文件后缀；不支持时返回 400，不做文本兜底。"""
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _SUPPORTED_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail="不支持的文件格式：%s；支持 pdf/docx/html/xlsx/csv/txt/md"
+            % (suffix or "（无扩展名）"),
+        )
+
+
+def _friendly_convert_error(raw: str) -> str:
+    """把底层异常转成可读中文，不向客户端暴露临时路径与英文堆栈。"""
+    text = raw or ""
+    lowered = text.lower()
+    if "不支持的文件格式" in text:
+        return text
+    if "package not found" in lowered or "packagenotfound" in lowered or "not a zip file" in lowered:
+        return "文件已损坏或不是有效的 docx（解压失败），请重新导出后上传"
+    if "unexpected eof" in lowered or "broken" in lowered:
+        return "文件不完整或已损坏，无法解析"
+    if "filedataerror" in lowered or "invalid" in lowered:
+        return "文件内容与扩展名不符或已损坏，无法解析"
+    return "转换失败（详细原因已记录到服务日志）"
+
 
 # ----------------------------------------------------------------------
 # 上传文件敏感信息扫描：检测身份证号、手机号、API Key、银行卡号等
@@ -165,12 +199,12 @@ async def _run_doc_task(task_id: str, content: bytes, filename: str, instruction
             result["memory_turns"] = info["memory_turns"]
         else:
             info["status"] = "error"
-            info["error"] = result.get("error", "转换失败")
+            info["error"] = _friendly_convert_error(result.get("error", "转换失败"))
         logger.info("异步转换完成: task=%s, status=%s", task_id, info["status"])
     except Exception as e:
         logger.exception("异步转换任务异常: task=%s", task_id)
         info["status"] = "error"
-        info["error"] = str(e)
+        info["error"] = _friendly_convert_error(str(e))
 
 
 @router.post("/convert/async", response_model=ConvertAsyncResponse)
@@ -183,6 +217,7 @@ async def convert_async(
     """提交异步转换任务：校验后立即返回 task_id，转换在后台执行，进度轮询 /tasks/{task_id}。"""
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名为空")
+    _validate_source_file(file.filename)
 
     content = await file.read()
     if not content:
@@ -238,6 +273,7 @@ async def convert(
     """上传文档 + 自然语言指令，执行转换；成功后写入会话记忆。"""
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名为空")
+    _validate_source_file(file.filename)
 
     content = await file.read()
     if not content:
@@ -259,7 +295,7 @@ async def convert(
         return ConvertResponse(
             status="error",
             plan=result["plan"],
-            error=result.get("error", ""),
+            error=_friendly_convert_error(result.get("error", "")),
             retry_count=result.get("retry_count", 0),
         )
 

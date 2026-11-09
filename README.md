@@ -50,6 +50,14 @@ Docker（需本机有 Docker）：
 docker compose up --build -d
 ```
 
+### 演示前 3 分钟检查
+
+- **改了代码必须重启**：`start.bat` 不带 `--reload`，运行中的进程不会加载新代码；关闭窗口重新双击才生效，否则会出现“改了没反应”。
+- **依赖连通性**：`curl http://127.0.0.1:8000/api/health?probe=1`，看 `llm.reachable` 是否为 `true`；RAG 的模型/向量服务不可用时接口返回 503 并在页面提示，不会静默失败。
+- **演示账号**：默认演示模式不校验密码；如需密码，在 `.env` 配置 `AUTH_USERS` 或 `GATEWAY_API_KEY` 后重启。
+- **健康检查**：`/health`、`/api/health`、`/rag/health`、`/doc/health` 均无需登录，可直接用于预检。
+- **崩溃自恢复**：本地裸跑没有进程守护，崩溃后重新双击 `start.bat`；需要自动重启请用 `docker compose up -d`（已配置 `restart: unless-stopped`）。
+
 ## 环境要求
 
 - Python 3.11（`requirements.lock` 按 3.11 锁定）

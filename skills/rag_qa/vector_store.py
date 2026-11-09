@@ -71,19 +71,28 @@ def parent_id_for(source: str, parent_index: int) -> str:
     return f"{source}#p{parent_index}"
 
 
-def build_doc_meta(doc_date: Optional[str] = None, doc_version: Optional[str] = None) -> dict:
+def build_doc_meta(
+    doc_date: Optional[str] = None,
+    doc_version: Optional[str] = None,
+    extra: Optional[dict] = None,
+) -> dict:
     """构造文档级仲裁字段，写入该文档全部块（child+parent）的 metadata。
 
     冲突仲裁依据（优先级从高到低）：
     - doc_date：文档自身日期（上传时显式指定，YYYY-MM-DD）
     - doc_version：文档版本号（上传时显式指定）
     - ingested_at：入库时间（自动生成，无显式信息时的兜底——后上传视为更新）
+
+    extra：额外的文档级元数据（如入库前格式转换的质量指标 conv_*），
+    原样合并，不改变上述三个字段的语义。
     """
     meta: dict = {"ingested_at": datetime.now().isoformat(timespec="seconds")}
     if doc_date:
         meta["doc_date"] = doc_date
     if doc_version:
         meta["doc_version"] = doc_version
+    if extra:
+        meta.update({k: v for k, v in extra.items() if v is not None})
     return meta
 
 
@@ -428,6 +437,7 @@ class VectorStore:
                     "ingested_at": None,
                     "doc_date": None,
                     "doc_version": None,
+                    "conversion": {},
                 },
             )
             if meta.get("chunk_type") == "parent":
@@ -441,6 +451,10 @@ class VectorStore:
             for field in ("ingested_at", "doc_date", "doc_version"):
                 if meta.get(field):
                     item[field] = meta[field]
+            # 入库前格式转换的质量指标（docx/xlsx/html 才存在；旧数据为空 dict）
+            for key, value in meta.items():
+                if key.startswith("conv_"):
+                    item["conversion"][key] = value
         return sorted(docs.values(), key=lambda d: d["source"])
 
     def list_chunks(

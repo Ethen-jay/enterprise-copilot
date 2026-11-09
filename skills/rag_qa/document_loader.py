@@ -87,6 +87,12 @@ def extract_text_from_path(path: str, filename: str) -> str:
         raise ValueError(f"不支持的文件格式: {ext}，支持: {SUPPORTED_EXT}")
 
 
+def _ensure_pdf_decrypted(doc) -> None:
+    """加密 PDF 需要密码才能抽取文本，提前给出明确错误（避免误判为文件损坏）。"""
+    if doc.needs_pass:
+        raise ValueError("PDF 已加密，无法解析；请上传解密后的版本")
+
+
 # ----------------------------------------------------------------------
 # PDF 分页文本：保留页边界，供引用溯源到原文页码
 # ----------------------------------------------------------------------
@@ -96,6 +102,7 @@ def extract_pdf_pages_from_path(
 ) -> list[str]:
     """从磁盘 PDF 抽取分页文本（每页一个字符串），扫描页自动 OCR 兜底。"""
     with pymupdf.open(path) as doc:
+        _ensure_pdf_decrypted(doc)
         return _extract_pages(doc, progress_callback)
 
 
@@ -105,6 +112,7 @@ def extract_pdf_pages_from_bytes(
 ) -> list[str]:
     """从字节内容抽取 PDF 分页文本（每页一个字符串），扫描页自动 OCR 兜底。"""
     with pymupdf.open(stream=data, filetype="pdf") as doc:
+        _ensure_pdf_decrypted(doc)
         return _extract_pages(doc, progress_callback)
 
 
@@ -155,6 +163,7 @@ def iter_pdf_page_batches(
     """
     cb = progress_callback or (lambda _: None)
     with pymupdf.open(path) as doc:
+        _ensure_pdf_decrypted(doc)
         total = len(doc)
         batch: list[str] = []
         first_page = 1
@@ -295,6 +304,7 @@ def _extract_pdf(data: bytes) -> str:
     """用 PyMuPDF 从字节内容抽取 PDF 全文。"""
     text_parts: list[str] = []
     with pymupdf.open(stream=data, filetype="pdf") as doc:
+        _ensure_pdf_decrypted(doc)
         for page in doc:
             text_parts.append(page.get_text())
     return "\n".join(text_parts)

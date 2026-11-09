@@ -14,7 +14,7 @@ import asyncio
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from common.auth import current_user
 from common import chat_memory
@@ -31,6 +31,25 @@ router = APIRouter()
 # 冲突仲裁字段的格式校验
 _DOC_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DOC_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,16}$")
+
+# 外部依赖（LLM / embedding / rerank）不可用时，异常链上常见的类型名。
+# 命中时返回 503 并提示依赖问题，避免演示时只看到泛化的 500。
+_DEPENDENCY_ERROR_NAMES = {
+    "APIConnectionError", "APITimeoutError", "ConnectError", "ConnectTimeout",
+    "ReadTimeout", "ReadError", "RemoteProtocolError", "TimeoutException",
+    "ConnectionError", "TimeoutError",
+}
+
+
+def _is_dependency_error(exc: BaseException) -> bool:
+    """沿异常链判断是否由模型/向量服务不可用引起。"""
+    cur, seen = exc, set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ in _DEPENDENCY_ERROR_NAMES:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _validate_arbiter_fields(doc_date: Optional[str], doc_version: Optional[str]) -> None:
@@ -76,7 +95,12 @@ def _public_error(exc: Exception) -> str:
 # ----------------------------------------------------------------------
 # 上传保护：文件大小上限 + 流式读取（避免大文件一次性进内存）
 # ----------------------------------------------------------------------
-ALLOWED_EXTS = {".pdf", ".md", ".markdown", ".txt", ".json", ".jsonl"}
+ALLOWED_EXTS = {
+    ".pdf", ".md", ".markdown", ".txt", ".json", ".jsonl",
+    # 入库前由 doc_agent converter 同进程转文本，无需用户先手动转 md
+    ".docx", ".xlsx", ".html", ".htm",
+}
+LEGACY_OFFICE_EXTS = {".doc", ".xls", ".ppt"}
 MAX_UPLOAD_BYTES = int(float(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024)
 _READ_CHUNK = 1024 * 1024  # 每次从上传流读取 1MB
 
@@ -88,31 +112,23 @@ class FileTooLargeError(Exception):
 def _validate_ext(filename: str) -> str:
     """校验文件扩展名，返回小写扩展名；非法时抛 400。"""
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext in LEGACY_OFFICE_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"旧版 Office 格式 {ext} 不支持入库；"
+                "请用 Word/Excel 另存为 .docx/.xlsx 后重新上传"
+            ),
+        )
     if ext not in ALLOWED_EXTS:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件格式: {ext}，支持 .pdf/.md/.txt/.json/.jsonl",
+            detail=(
+                f"不支持的文件格式: {ext}，支持 .pdf/.md/.markdown/.txt/.json/.jsonl/"
+                ".docx/.xlsx/.html/.htm"
+            ),
         )
     return ext
-
-
-async def _read_upload_limited(file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES) -> bytes:
-    """分块流式读取上传文件，累计超过上限立即中断（不全量载入内存）。
-
-    返回完整字节内容（供下游解析）；超限抛 FileTooLargeError。
-    """
-    parts: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(_READ_CHUNK)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            await file.close()
-            raise FileTooLargeError(max_bytes)
-        parts.append(chunk)
-    return b"".join(parts)
 
 
 # 上传临时文件落盘目录（data/ 已在 .gitignore 中排除）
@@ -277,7 +293,13 @@ async def ingest(
             raise HTTPException(status_code=409, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        except Exception:
+        except Exception as e:
+            if _is_dependency_error(e):
+                logger.exception("入库依赖服务不可用")
+                raise HTTPException(
+                    status_code=503,
+                    detail="向量化服务暂时不可用，请检查网络或模型服务后重试（已记录日志）",
+                )
             # 不把内部异常文本（可能含服务器临时路径）返回给客户端，细节只进日志
             logger.exception("入库失败")
             raise HTTPException(status_code=500, detail="入库失败，请稍后重试（已记录日志）")
@@ -766,6 +788,8 @@ class DocumentItem(BaseModel):
     ingested_at: Optional[str] = None   # 入库时间（旧数据无此字段时为 null）
     doc_date: Optional[str] = None      # 文档日期（上传时可选指定）
     doc_version: Optional[str] = None   # 文档版本号（上传时可选指定）
+    # 入库前格式转换的质量指标（docx/xlsx/html；其他格式与旧数据为空对象）
+    conversion: dict = Field(default_factory=dict)
 
 
 class DocumentListResponse(BaseModel):
@@ -919,7 +943,13 @@ async def chat(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception:
+    except Exception as e:
+        if _is_dependency_error(e):
+            logger.exception("问答依赖服务不可用")
+            raise HTTPException(
+                status_code=503,
+                detail="模型或向量服务暂时不可用，请检查网络或模型服务后重试（已记录日志）",
+            )
         logger.exception("问答失败")
         raise HTTPException(status_code=500, detail="问答失败，请稍后重试（已记录日志）")
 

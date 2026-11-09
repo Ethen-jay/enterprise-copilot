@@ -17,6 +17,7 @@ from skills.doc_agent.converters import (
     pdf_converter,
     text_converter,
 )
+from skills.doc_agent.extract import source_to_markdown
 from skills.doc_agent.planner import sniff_legacy_binary_format
 from skills.doc_agent.planner_v2 import TaskPlan, create_plan
 from skills.doc_agent.reflection import reflect_conversion, CAUSE_TO_ADJUSTMENT
@@ -464,42 +465,17 @@ def _read_as_markdown(
 ) -> str:
     """将源文件解析为 Markdown 文本（hub 的入边）。
 
+    抽取逻辑集中在 skills/doc_agent/extract.py，与 RAG 入库共用同一份，
+    避免转换状态机和文档接入层各自维护一套解析规则。
+
     参数:
         src_path: 源文件路径。
         src: 源格式名。
         adjustment: 重试调整策略；use_text_strategy 时 PDF 改用 text 表格策略。
     """
-    if src == "pdf":
-        pdf_table_settings = None
-        if adjustment == "use_text_strategy":
-            pdf_table_settings = {
-                "vertical_strategy": "text",
-                "horizontal_strategy": "text",
-            }
-        return pdf_converter.pdf_to_markdown(
-            src_path,
-            table_settings=pdf_table_settings,
-            assets_dir=OUTPUT_DIR / "assets",
-        )
-
-    if src == "docx":
-        return docx_converter.docx_to_markdown(
-            src_path, assets_dir=OUTPUT_DIR / "assets"
-        )
-
-    if src == "html":
-        html = Path(src_path).read_text(encoding="utf-8")
-        return html_converter.html_to_markdown(html)
-
-    if src == "xlsx":
-        return excel_converter.excel_to_markdown(src_path)
-
-    if src == "txt":
-        text = Path(src_path).read_text(encoding="utf-8")
-        return text_converter.text_to_markdown(text)
-
-    # markdown 及其它文本格式：直接读取
-    return Path(src_path).read_text(encoding="utf-8")
+    return source_to_markdown(
+        src_path, src, adjustment=adjustment, assets_dir=OUTPUT_DIR / "assets"
+    )
 
 
 def _write_from_markdown(

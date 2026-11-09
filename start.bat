@@ -14,6 +14,16 @@ if not exist ".env" (
     exit /b 1
 )
 
+netstat -ano | findstr /r /c:":8000 .*LISTENING" >nul 2>&1
+if not errorlevel 1 (
+    echo [提示] 8000 端口已被占用，可能已有一个服务在运行。
+    echo        如果页面能打开，可直接使用；需要重启请先关闭旧窗口，再运行本脚本。
+    start "" http://127.0.0.1:8000/
+    pause
+    exit /b 1
+)
+
 echo 启动 enterprise-copilot 一体化网关：http://127.0.0.1:8000
 echo 按 Ctrl+C 停止服务。
+echo [注意] 本脚本不带 --reload：修改代码后必须关闭本窗口重新运行才生效。
 .venv\Scripts\python.exe -m uvicorn gateway.app:app --host 127.0.0.1 --port 8000

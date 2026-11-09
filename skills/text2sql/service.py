@@ -24,11 +24,14 @@ main.py —— FastAPI 服务入口（阶段 D）
 import asyncio
 import json
 import logging
+import os
 import re
 import sqlite3
+import tempfile
+from pathlib import Path
 from typing import Callable, List, Optional
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -37,6 +40,7 @@ from common.auth import current_user
 from common import chat_memory
 from common.chat_memory import session_header
 from . import config
+from . import datasource, metric_dict
 from .anchor import get_anchor_date, get_snapshot_date
 from .schema_linker import build_context, log_link
 from .llm_client import generate_sql, regenerate_sql, rewrite_question, LLMError
@@ -185,7 +189,7 @@ def _resolve_sql_memory(question: str, user: str, session_id: Optional[str]):
             memory_turns=len(turns),
         ), question, turns
 
-    rewritten = rewrite_question(question, turns)
+    rewritten = rewrite_question(question, turns, last_sql=last_sql)
     return None, rewritten, turns
 
 
@@ -211,7 +215,12 @@ def _validate_ask(req: AskRequest) -> None:
 # 健康检查：页面加载前可用来判断配置是否齐全
 # ----------------------------------------------------------------------
 @router.get("/health")
-def health():
+def health(probe: bool = False):
+    """健康检查；probe=1 时额外用 2 秒超时探测 LLM 地址是否可达。
+
+    默认不探测：避免每次健康检查都发外部请求；预检脚本用 ?probe=1，
+    可发现“配置齐全但模型地址不可达”这种演示必翻车的情况。
+    """
     # 数据库可读性检查（只读 URI 连一下，不跑业务 SQL）
     db_ok = False
     table_count = 0
@@ -235,11 +244,26 @@ def health():
         llm_info = "未配置 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL"
         llm_ready = False
 
+    llm_reachable = None
+    if probe and llm_ready:
+        try:
+            import httpx
+
+            resp = httpx.get(
+                llm.base_url.rstrip("/") + "/models",
+                headers={"Authorization": "Bearer " + llm.api_key},
+                timeout=2.0,
+            )
+            llm_reachable = resp.status_code < 500
+        except Exception:
+            llm_reachable = False
+
     anchor = get_anchor_date()
+    healthy = db_ok and llm_ready and llm_reachable is not False
     return {
-        "status": "ok" if db_ok and llm_ready else "degraded",
+        "status": "ok" if healthy else "degraded",
         "database": {"path": str(config.DB_PATH), "ok": db_ok, "tables": table_count},
-        "llm": {"ready": llm_ready, "info": llm_info},
+        "llm": {"ready": llm_ready, "reachable": llm_reachable, "info": llm_info},
         "anchor_date": anchor.date,
         "anchor_dynamic": anchor.dynamic,
         "anchor_source": anchor.source,
@@ -279,9 +303,25 @@ def _ask_pipeline(
     resp = AskResponse(question=question)
 
     # 0) 会话记忆：元问题直接回答；指代追问先改写（失败回退原问题）
-    mem_resp, effective_question, _turns = _resolve_sql_memory(question, user, session_id)
+    mem_resp, effective_question, turns = _resolve_sql_memory(question, user, session_id)
     if mem_resp is not None:
         return mem_resp
+
+    # 对上一轮查询做增量修改（换排序 / 换 TopN / 只要前 N 条等）时，
+    # 把上一轮 SQL 作为结构化基准追加到改写结果：不依赖改写模型主动复述，
+    # 后续生成一定能拿到原表、筛选、聚合与排序，再叠加本次修改。
+    previous_sql = ""
+    if turns:
+        _last_sql = (turns[-1].get("extra") or {}).get("sql", "")
+        if _last_sql and chat_memory.is_sql_modification(question):
+            previous_sql = str(_last_sql)
+    if previous_sql:
+        effective_question = (
+            "%s\n（基于上一轮查询，原 SQL：%s；"
+            "请在保留原表、筛选条件、聚合口径与排序的前提下，只执行本次修改）"
+            % (effective_question, previous_sql)
+        )
+
     if effective_question != question:
         resp.rewritten_question = effective_question
         resp.used_memory = True
@@ -472,6 +512,151 @@ def sql_session_clear(user: str = Depends(current_user),
     """清空 Text2SQL 会话记忆（清空后追问无法再改写，回到单轮行为）。"""
     cleared = chat_memory.clear(user, session_id, "sql")
     return {"ok": True, "cleared": cleared}
+
+
+# ----------------------------------------------------------------------
+# 上传数据源：xlsx/csv → 推断 schema → 建表 → 立即可问数
+# 独立库 user_uploads.db，查询时由 executor 以只读 ATTACH 成 userdb；
+# 守卫 / LIMIT / 超时 / 澄清 / 自动修复全部复用 /ask 原链路。
+# ----------------------------------------------------------------------
+_DATASOURCE_EXTS = {".xlsx", ".xlsm", ".csv"}
+
+
+def _validate_datasource_ext(filename: str) -> str:
+    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext == ".xls":
+        raise HTTPException(
+            status_code=400,
+            detail="旧版 .xls 不支持导入；请用 Excel 另存为 .xlsx 或 .csv 后重试",
+        )
+    if ext not in _DATASOURCE_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的数据文件格式: {ext}，支持 .xlsx/.xlsm/.csv",
+        )
+    return ext
+
+
+@router.post("/datasource/upload")
+async def datasource_upload(
+    file: UploadFile = File(...),
+    table_name: str = Form(""),
+    replace: bool = Form(False),
+    user: str = Depends(current_user),
+):
+    """上传 Excel/CSV 并建表；返回表名、列类型、行数与推断备注。"""
+    filename = file.filename or ""
+    ext = _validate_datasource_ext(filename)
+
+    max_bytes = config.MAX_DATASOURCE_MB * 1024 * 1024
+    upload_dir = config.DATA_DIR / "tmp" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix="ds_", dir=str(upload_dir))
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过 {config.MAX_DATASOURCE_MB}MB 上限",
+                    )
+                out.write(chunk)
+        try:
+            result = datasource.import_file(
+                Path(tmp_path), filename, table_name=table_name.strip() or None,
+                replace=replace,
+            )
+        except datasource.DataSourceError as e:
+            raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    result["user"] = user
+    return result
+
+
+@router.get("/datasource")
+def datasource_list(user: str = Depends(current_user)):
+    """列出已导入的用户数据表（含列定义与行数）。"""
+    return {"user": user, "tables": datasource.list_sources(),
+            "db": str(config.USER_DB_PATH)}
+
+
+@router.delete("/datasource/{name}")
+def datasource_delete(name: str, user: str = Depends(current_user)):
+    try:
+        return datasource.delete_source(name)
+    except datasource.DataSourceError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+
+
+# ----------------------------------------------------------------------
+# 指标口径字典：查看 + 从已入库文档人工确认后写入
+# ----------------------------------------------------------------------
+class MetricFromDocRequest(BaseModel):
+    source: str = Field(..., min_length=1, description="已入库文档的原始文件名")
+    snippet: str = Field(..., min_length=1, description="约定格式的 Markdown 指标片段")
+    confirmed_by: str = Field("", description="确认人/评审记录，可空")
+
+
+@router.get("/metric-dictionary")
+def metric_dictionary(user: str = Depends(current_user)):
+    """查看当前字典条目与注入状态（解析失败时 metrics 为空，不报错）。"""
+    metrics = metric_dict.load_metrics()
+    return {
+        "path": str(config.METRIC_DICT_PATH),
+        "count": len(metrics),
+        "injected": bool(metric_dict.load_metric_section()),
+        "metrics": metrics,
+    }
+
+
+@router.post("/metric-dictionary/from-doc")
+def metric_dictionary_from_doc(
+    req: MetricFromDocRequest,
+    user: str = Depends(current_user),
+):
+    """把已入库文档里人工确认的口径写入字典。
+
+    校验顺序：片段格式 → 文档归属（可选，RAG 不可用时自动跳过）→ 写 YAML。
+    同名指标视为更新口径，不会重复注入。
+    """
+    metric = metric_dict.parse_markdown_snippet(
+        req.snippet, source=req.source, confirmed_by=req.confirmed_by
+    )
+    # 归属校验：文档必须在当前用户知识库中；RAG 模块不可用时降级为不校验，
+    # 不阻断人工维护 YAML 这条兜底路径。
+    try:
+        from skills.rag_qa.vector_store import get_store
+
+        if not get_store(user).has_document(req.source):
+            raise HTTPException(
+                status_code=404,
+                detail=f"文档 {req.source} 不在当前用户知识库中，请先入库或检查文件名",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning("RAG 文档归属校验不可用，跳过（不影响字典写入）", exc_info=True)
+
+    try:
+        metric_dict.append_metric(metric)
+    except metric_dict.MetricDictError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "ok": True,
+        "metric": metric,
+        "count": len(metric_dict.load_metrics()),
+        "path": str(config.METRIC_DICT_PATH),
+    }
 
 
 # ----------------------------------------------------------------------
