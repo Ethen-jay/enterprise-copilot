@@ -18,3 +18,5 @@ venv/
 
 # 评测历史留痕（只保留 latest.json 与 adversarial_latest.json，带时间戳的历史跑批不入库）
 skills/*/eval/runs/run_*.json
+eval/runs/eval_*.json
+eval/runs/eval_*.md

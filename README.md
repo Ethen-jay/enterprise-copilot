@@ -1,6 +1,6 @@
 # enterprise-copilot —— 一体化企业智能助手
 
-以 **Text-to-SQL 为主**、RAG 知识问答与文档转换 Agent 为辅的三合一原型，单应用单端口运行。
+以 **数据问答（Text-to-SQL）与知识问答（RAG）** 为主的双入口原型，单应用单端口运行；文档转换能力保留在后端（`/doc/*`），供内部链路与评测脚本调用，前端不再单列页签。
 
 > 定位：可内部试点的 PoC，非生产系统。真实数据接入 / 权限体系 / 可观测等企业化项尚未完成（见文末「边界」）。
 
@@ -23,7 +23,7 @@ enterprise-copilot/
 │  ├─ text2sql/    自然语言 → SQL → 结果（schema_linker/llm_client/sql_guard/executor）
 │  ├─ rag_qa/      检索增强问答（embeddings/reranker/vector_store/rag_engine）
 │  └─ doc_agent/   LangGraph 文档转换 Agent + 纯规则转换快速通道
-├─ web/            统一前端（SQL 主页 + RAG/文档侧边页签）
+├─ web/            统一前端（数据问答 + 知识问答两个页签）
 ├─ tests/          端到端测试脚本
 ├─ data/           chroma 向量库 + ic_substrate.db + 运行期目录（gitignore）
 ├─ install.bat / start.bat   一键装依赖 / 一键启动
@@ -70,7 +70,9 @@ docker compose up --build -d
 | 路径 | 内容 | 来源 |
 |---|---|---|
 | `data/chroma/` | RAG 向量库（`rag_knowledge_base` 共享库 + 按用户的 `kb_{user}` 独立库） | 旧仓 `text-converter-assistant` 原样复制；也可经 `/rag/ingest` 重新入库 |
-| `data/db/ic_substrate.db` | 拟真 ERP+MES SQLite（22 张表，只读） | 旧仓 `erp-mes-copilot` 原样复制 |
+| `data/db/ic_substrate.db` | 拟真 ERP+MES SQLite（只读示例库，表数量以实际扫描为准） | 旧仓 `erp-mes-copilot` 原样复制 |
+| `data/userdb/<账号>/` | 该账号接入的数据源（`connection.json` + 上传的 SQLite 私有副本） | 前端「数据问答」页接入时生成 |
+| `data/users.db` | 账号库（用户名、PBKDF2 密码哈希、登录失败锁定记录） | 首次启动自动创建 |
 
 新环境需从旧仓复制这两项，或通过 ingest 重建 chroma。
 
@@ -85,9 +87,9 @@ RAG 的知识库**按登录账号隔离**：每个账号一个独立 Chroma coll
 命令行示例（PowerShell，先登录换取令牌）：
 
 ```powershell
-# 1. 登录拿令牌（未配置 AUTH_USERS / GATEWAY_API_KEY 时密码可留空，账号仍需合法）
-$login = '{"account":"alice","password":""}'
-$token = (curl.exe -s -X POST http://127.0.0.1:8000/login -H "Content-Type: application/json" -d $login | ConvertFrom-Json).token
+# 1. 登录拿令牌（账号需先注册，未配置 ADMIN_PASSWORD 时管理员密码见首次启动日志）
+$login = '{"username":"alice","password":"Alice@2026"}'
+$token = (curl.exe -s -X POST http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" -d $login | ConvertFrom-Json).token
 
 # 2. 后续请求统一带 Bearer 令牌，否则 401
 curl.exe -H "Authorization: Bearer $token" -F "file=@文档.md" http://127.0.0.1:8000/rag/ingest
@@ -96,12 +98,40 @@ curl.exe -H "Authorization: Bearer $token" -H "Content-Type: application/json" -
 
 > 注：PowerShell 中 `curl` 是 `Invoke-WebRequest` 的别名，示例使用 `curl.exe`；账号仅限字母/数字/下划线/连字符，1-32 位。这是最小多租户 demo（按账号命名的 collection），生产需结合 SSO / 权限体系。
 
+### 数据源接入（按用户隔离）
+
+数据问答查的是「当前登录账号接入的库」，不再默认指向示例库：
+
+- 未接入时状态条显示「未接入数据库」，取数返回「请先接入数据库」，不会偷偷回落示例库。
+- 接入方式：`POST /datasource/connect-demo`（内置示例库，只读共享）或 `POST /datasource/sqlite`（上传 `.db/.sqlite/.sqlite3`，复制到 `data/userdb/<账号>/` 私有目录，账号之间互不可见）。
+- `GET /datasource/status` 返回真实扫描结果：纳入的表（含行数、列定义）、被排除的表及原因（SQLite 系统表、`_meta_*` 登记表、无业务字段）、表数量、数据快照日期。
+- 快照日期取法：对纳入表的日期列执行 `MAX(日期)` 取全局最大值，并在 `snapshot_source` 里回传 `表.列`；库内没有可识别日期列时回退为库文件修改日期（`snapshot_note` 会写明）。示例库若显式配置 `SNAPSHOT_DATE`，则优先使用该固定值。
+- 扫描缓存：按「文件大小:修改时间(ns)」指纹缓存，文件变化自动失效；`GET /datasource/status?refresh=1` 可手动强制重扫。首次扫描需逐表 `PRAGMA table_info` + `COUNT(*)` + `MAX(日期)`，耗时随表数量线性增长（返回里带 `scan.duration_ms`，20 余张表通常在数百毫秒内）；命中缓存时只有一次 `stat` 的开销。
+- PostgreSQL：当前 executor 只支持 SQLite（`mode=ro` 只读 URI），因此暂不支持 PostgreSQL 连接串，未做半成品适配。
+
+### 上传分流（前端两个页签）
+
+「数据问答 / 知识问答」两个页签各有上传入口，上传后先调用 `/ingest/classify` 按内容判别，再让用户确认或改判：
+
+- xlsx：看工作表数量、列数与有效行数（多列且逐行有值 → 数据表）；
+- csv：看分隔符、列数与行数（≥2 列且 ≥2 行 → 数据表）；
+- docx：看表格数与正文段落占比（表格为主、正文很少 → 可能是数据表）；
+- pdf / md / txt：以叙述内容为主 → 文档；
+- `.db/.sqlite/.sqlite3`：校验 SQLite 文件头与表数量 → 直接接入数据源。
+
+判别结果会在卡片中逐条展示依据（例如“检测到 3 个工作表；首行为表头，共 5 列”），并同时提供主操作与「改判」按钮；判别失败（unknown）时只展示选项、不静默按默认处理。知识问答入库只显示「解析中 → 已入库 N 个分块」，不展示任何中间文件。
+
 ## API
 
 | 方法 | 路径 | 功能 |
 |---|---|---|
 | POST | `/ask` | Text-to-SQL 问答（主技能，挂根路径） |
 | GET | `/health` | Text-to-SQL 健康检查（含动态锚点审计） |
+| GET | `/datasource/status` | 当前用户数据源状态（真实表数、快照日、纳入/排除表） |
+| POST | `/datasource/connect-demo` | 接入内置示例库 |
+| POST | `/datasource/sqlite` | 上传 SQLite 作为当前用户私有数据源 |
+| DELETE | `/datasource/connection` | 断开当前数据源 |
+| POST | `/ingest/classify` | 上传文件分流判别（数据表/文档/数据库 + 可解释依据） |
 | POST | `/rag/chat` | 知识库问答（检索→重排→LLM→蕴含裁判反思） |
 | POST | `/rag/ingest` | 文档入库（支持 replace 同名替换、doc_date/doc_version 仲裁字段） |
 | POST | `/rag/ingest/stream` | SSE 流式入库（实时推送解析/分块/embedding/OCR 进度） |
@@ -112,7 +142,7 @@ curl.exe -H "Authorization: Bearer $token" -H "Content-Type: application/json" -
 | GET | `/rag/documents` | 知识库文档列表（小块数/父块数/最大页码） |
 | DELETE | `/rag/documents?source=` | 按文件名删除文档 |
 | GET | `/rag/health` | RAG 健康检查 |
-| POST | `/doc/convert` | 文档转换（同步） |
+| POST | `/doc/convert` | 文档转换（同步，内部链路/评测使用，前端不暴露入口） |
 | POST | `/doc/convert/async` | 文档转换（异步任务） |
 | GET | `/doc/tasks/{task_id}` | 转换任务进度查询 |
 | GET | `/doc/download/{filename}` | 下载转换结果 |
@@ -153,25 +183,52 @@ curl.exe -H "Authorization: Bearer $token" -H "Content-Type: application/json" -
 - Markdown → Word 转换前做列表规范化（列表与正文间补空行），确保 Word 输出真正的列表结构。
 - 旧版二进制格式识别：converter 节点按文件头魔数（OLE2）嗅探，`.doc`/`.xls` 改名成 `.docx`/`.xlsx` 骗不过；命中即返回可操作中文提示，而非抛出含内部临时路径的裸库报错。
 
-## 认证
+## 账号与认证
 
-身份一律由登录签发的 JWT 派生，业务接口**默认需要令牌**（除 `/`、`/health`、`/api/health`、`/rag/health`、`/doc/health`、`/login`、`/docs` 等白名单）。未带令牌访问业务接口返回 401。
+身份一律由登录签发的 JWT 派生，业务接口**默认需要令牌**（除 `/`、`/health`、`/api/health`、`/rag/health`、`/doc/health`、`/auth/login`、`/auth/register`、`/login`、`/docs` 等白名单）。未带令牌访问业务接口返回 401，不存在演示模式或"未配置密码就放行"的后门。
 
-- 登录：`POST /login`，请求体 `{"account":"alice","password":"..."}`；账号仅限字母/数字/下划线/连字符（1-32 位）。密码校验规则：配置了 `AUTH_USERS="alice:密码"` 时按账号密码校验；否则配置了 `GATEWAY_API_KEY` 时用共享密钥当密码；两者都未配置则为演示模式，只校验账号格式。
-- 令牌：响应中的 `token` 即 JWT（HS256，默认 12 小时，`AUTH_TOKEN_TTL_HOURS` 可调），后续请求带 `Authorization: Bearer <token>`。签名密钥取 `AUTH_JWT_SECRET`（建议 ≥32 位）；未配置时自动生成 `data/.jwt_secret` 并打告警。
-- 服务通道：配置 `GATEWAY_API_KEY`（逗号分隔可配多个）后，可用 `X-API-Key: your-key` 调用，身份固定为服务账号 `service`（`GATEWAY_SERVICE_ACCOUNT` 可改）。
-- 前端页面登录后把令牌存浏览器 localStorage，所有请求自动带 `Authorization`；令牌过期会提示重新登录。
-- 命令行调用示例：
+**账号存储与密码哈希**
+
+- 账号落 `data/users.db`（SQLite），字段含 username、password_hash、display_name、role、created_at、disabled、token_version。
+- 密码用标准库 PBKDF2-HMAC-SHA256，**260000 轮 + 16 字节随机盐**，存储为自描述串 `pbkdf2_sha256$260000$<salt>$<hash>`，不存明文；后续调高轮数可平滑升级。
+- 用户名规则 `^[A-Za-z0-9_-]{1,32}$`，忽略大小写唯一；`default`/`service`/`system` 为保留名。密码长度 8–128 位。
+
+**首次启动**
+
+用户库为空时自动创建管理员 `admin`：密码取环境变量 `ADMIN_PASSWORD`；未配置则随机生成，**只在启动日志打印一次**。登录后请在页面右上角「改密」立即修改。
+
+**接口**
+
+| 接口 | 说明 |
+|---|---|
+| `POST /auth/register` | `{"username","password","confirm_password","display_name"}`，重复用户名返回 409 |
+| `POST /auth/login` | `{"username","password"}` → `{token, expires_in, user}`（`/login` 保留为兼容旧脚本的别名） |
+| `GET /auth/me` | 需令牌，返回 username / display_name / role |
+| `POST /auth/password` | 需令牌，`{"old_password","new_password","confirm_password"}`；成功后 token_version 自增，**旧令牌立即失效**，需重新登录 |
+
+**登录防护**
+
+同一「用户名 + IP」连续失败 **5 次锁定 5 分钟**（`common/users.py` 的 `LOGIN_MAX_FAILS` / `LOGIN_LOCK_SECONDS`）。失败提示统一为「用户名或密码错误」，不区分账号是否存在；账号不存在时也做一次等价哈希校验，避免用响应耗时探测账号。
+
+**令牌**
+
+HS256，默认 12 小时（`AUTH_TOKEN_TTL_HOURS` 可调），claims 含 `sub`、`ver`、`iat`、`exp`、`iss`。`ver` 与用户库 `token_version` 对齐，改密/禁用后旧令牌立即被判无效。签名密钥取 `AUTH_JWT_SECRET`（建议 ≥32 位）；未配置时自动生成 `data/.jwt_secret` 并打告警。
+
+**服务通道**
+
+配置 `GATEWAY_API_KEY`（逗号分隔可配多个）后，可用 `X-API-Key: your-key` 调用，身份固定为服务账号 `service`（`GATEWAY_SERVICE_ACCOUNT` 可改）；这是服务间调用通道，不能冒充任意用户。
+
+**命令行示例**
 
 ```powershell
+# 注册（或直接用管理员账号登录）
+curl.exe -X POST http://127.0.0.1:8000/auth/register -H "Content-Type: application/json" -d '{"username":"alice","password":"Alice@2026","confirm_password":"Alice@2026"}'
+
 # 登录换令牌
-$token = (curl.exe -s -X POST http://127.0.0.1:8000/login -H "Content-Type: application/json" -d '{"account":"alice","password":""}' | ConvertFrom-Json).token
+$token = (curl.exe -s -X POST http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" -d '{"username":"alice","password":"Alice@2026"}' | ConvertFrom-Json).token
 
 # 用户令牌
 curl.exe -H "Authorization: Bearer $token" -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d '{"question":"当前在制工单有多少批？"}'
-
-# 服务通道（配置 GATEWAY_API_KEY 后可用，身份固定为 service）
-curl.exe -H "X-API-Key: your-key" -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d '{"question":"当前在制工单有多少批？"}'
 ```
 
 ## 生产级中间件（Redis 限流，可选）

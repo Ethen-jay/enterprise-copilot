@@ -212,6 +212,8 @@
   .login-card .btn { width: 100%; }
   .login-msg { min-height: 20px; font-size: 13px; color: var(--danger); margin-top: 14px; }
   .login-hint { font-size: 12px; color: var(--muted); margin-top: 16px; line-height: 1.6; }
+  .login-switch { font-size: 13px; text-align: center; margin-top: 14px; }
+  .login-switch a { color: var(--brand); text-decoration: none; }
 
   @media (max-width: 640px) {
     .row { flex-direction: column; }
@@ -223,17 +225,34 @@
 </style>
 </head>
 <body>
-<!-- 登录视图 -->
+<!-- 登录 / 注册视图 -->
 <div id="loginView" class="login-view">
   <div class="login-card">
     <div class="logo">AI</div>
-    <h2>一体化企业智能助手</h2>
-    <p class="login-sub">登录后开始使用</p>
-    <input id="loginAccount" type="text" placeholder="账号（字母/数字/下划线）" autocomplete="username">
-    <input id="loginKey" type="password" placeholder="登录密码（服务配置了密码时必填）" autocomplete="current-password">
+    <h2 id="authTitle">一体化企业智能助手</h2>
+    <p class="login-sub" id="authSub">登录后开始使用</p>
+    <input id="loginAccount" type="text" placeholder="用户名（字母/数字/下划线/连字符）" autocomplete="username">
+    <input id="loginKey" type="password" placeholder="密码（至少 8 位）" autocomplete="current-password">
+    <input id="regConfirm" type="password" placeholder="确认密码" autocomplete="new-password" style="display:none;">
+    <input id="regDisplay" type="text" placeholder="显示名（可选）" style="display:none;">
     <button id="loginBtn" class="btn">登 录</button>
+    <div class="login-switch"><a id="modeToggle" href="javascript:void(0)">没有账号？注册</a></div>
     <div id="loginMsg" class="login-msg"></div>
-    <div id="loginHint" class="login-hint">正在检测服务状态…</div>
+    <div id="loginHint" class="login-hint">请输入用户名与密码。首次启动可用服务日志中打印的 admin 初始密码登录，登录后请立即修改密码。</div>
+  </div>
+</div>
+
+<!-- 修改密码视图 -->
+<div id="pwdView" class="login-view" style="display:none;">
+  <div class="login-card">
+    <h2>修改密码</h2>
+    <p class="login-sub">修改成功后旧令牌失效，需要重新登录</p>
+    <input id="pwdOld" type="password" placeholder="旧密码" autocomplete="current-password">
+    <input id="pwdNew" type="password" placeholder="新密码（至少 8 位）" autocomplete="new-password">
+    <input id="pwdConfirm" type="password" placeholder="确认新密码" autocomplete="new-password">
+    <button id="pwdBtn" class="btn">确认修改</button>
+    <button id="pwdCancel" class="btn gray small" style="width:100%;margin-top:10px;">返回</button>
+    <div id="pwdMsg" class="login-msg"></div>
   </div>
 </div>
 
@@ -243,25 +262,48 @@
     <div class="brand">
       <div class="logo">AI</div>
       <h1>一体化企业智能助手
-        <span class="sub">Text-to-SQL 为主 · RAG 知识问答 · 文档转换</span>
+        <span class="sub">数据问答 · 知识问答</span>
       </h1>
     </div>
     <div class="head-tools">
       <span id="healthBadge" class="badge"><span class="dot"></span>正在检查服务…</span>
       <span id="loginBadge" class="badge ok"><span class="dot"></span>已登录</span>
+      <button id="changePwdBtn" class="btn gray small">改密</button>
       <button id="logoutBtn" class="btn gray small">登出</button>
     </div>
   </header>
 
   <div class="tabs">
-    <button data-tab="sql" class="active">SQL 取数</button>
+    <button data-tab="sql" class="active">数据问答</button>
     <button data-tab="rag">知识问答</button>
-    <button data-tab="doc">文档转换</button>
   </div>
 
   <!-- ============ 面板 1：SQL 取数（主） ============ -->
   <div id="panel-sql" class="panel active">
     <div class="box">
+      <div class="file-row" style="margin-bottom:6px;">
+        <span class="hint">数据源</span>
+        <b id="dsName">加载中…</b>
+        <span id="dsMeta" class="hint"></span>
+      </div>
+      <div class="row" style="margin-bottom:10px;">
+        <button id="dsDemoBtn" class="mini-btn" type="button">接入示例库</button>
+        <input type="file" id="dsSqliteFile" accept=".db,.sqlite,.sqlite3" style="display:none">
+        <button id="dsUploadBtn" class="mini-btn" type="button">上传 SQLite</button>
+        <button id="dsRefreshBtn" class="mini-btn" type="button">刷新扫描</button>
+        <button id="dsDisconnectBtn" class="mini-btn" type="button">断开</button>
+        <span id="dsMsg" class="hint"></span>
+      </div>
+      <details id="dsTables" style="display:none;margin-bottom:10px;">
+        <summary id="dsTablesSummary" style="cursor:pointer;font-size:13px;">表清单与排除原因</summary>
+        <div id="dsTablesBody" class="hint" style="margin-top:6px;white-space:pre-wrap;"></div>
+      </details>
+      <div class="file-row" style="margin-bottom:8px;">
+        <input type="file" id="dataUploadFile" accept=".xlsx,.xlsm,.csv,.db,.sqlite,.sqlite3">
+        <button id="dataUploadBtn" class="btn gray small" type="button">上传并识别</button>
+        <span class="hint">表格文件建表，SQLite 直接接入</span>
+      </div>
+      <div id="dataUploadCard" style="margin:0 0 10px;"></div>
       <div class="row">
         <input id="sqlQ" type="text" placeholder="例如：当前在制工单有多少批？" autocomplete="off">
         <button id="sqlBtn" class="btn">提 问</button>
@@ -295,10 +337,11 @@
         <button id="ragMemClear" class="mini-btn" type="button">清空会话</button>
       </div>
       <div class="file-row">
-        <input type="file" id="ragFile" accept=".pdf,.md,.markdown,.txt,.json,.jsonl">
-        <button id="ragIngestBtn" class="btn gray small">上传入库</button>
+        <input type="file" id="ragFile" accept=".pdf,.docx,.doc,.md,.markdown,.txt,.json,.jsonl,.html,.htm,.xlsx,.xlsm,.csv">
+        <button id="ragIngestBtn" class="btn gray small" type="button">上传并识别</button>
         <span id="ragIngestMsg" class="hint"></span>
       </div>
+      <div id="ragUploadCard" style="margin:0 0 10px;"></div>
       <div class="file-row">
         <input type="date" id="ragDocDate" title="文档日期（可选，YYYY-MM-DD）">
         <input type="text" id="ragDocVersion" placeholder="版本号（可选，如 v2.0）" maxlength="16" style="max-width:170px;">
@@ -319,24 +362,6 @@
       <div id="ragHistory" class="history"></div>
     </div>
     <div id="ragResult" class="result"></div>
-  </div>
-
-  <!-- ============ 面板 3：文档转换（doc_agent） ============ -->
-  <div id="panel-doc" class="panel">
-    <div class="box">
-      <div class="file-row">
-        <input type="file" id="docFile">
-      </div>
-      <textarea id="docInstruction" placeholder="转换指令，例如：把这个 PDF 转成 Markdown，保留表格；也可不选文件直接说「再把它转成 PDF」"></textarea>
-      <div class="row" style="margin-top:8px;">
-        <span id="docMemInfo" class="hint">会话记忆：暂无转换记录</span>
-        <button id="docMemClear" class="mini-btn" type="button">清空会话记忆</button>
-      </div>
-      <div class="row" style="margin-top:12px;">
-        <button id="docBtn" class="btn">开始转换</button>
-      </div>
-    </div>
-    <div id="docResult" class="result"></div>
   </div>
 </div>
 
@@ -710,145 +735,182 @@ function askRag() {
     .catch(function (e) { $("ragResult").innerHTML = '<div class="card"><div class="error">请求失败：' + esc(e.message) + "</div></div>"; })
     .finally(function () { btn.disabled = false; btn.textContent = "提 问"; });
 }
-function resetIngestBtn() {
-  var btn = $("ragIngestBtn");
-  clearTimeout(btn._timer);
-  btn.dataset.confirmReplace = "";
-  btn.classList.remove("warn");
-  btn.disabled = false;
-  btn.textContent = "上传入库";
+/* ---------- 上传分流：按内容识别，展示依据，用户可确认或改判 ---------- */
+var MAX_UPLOAD_MB = 50;  // 与后端 MAX_UPLOAD_MB 保持一致
+
+function uploadCardEl(tab) { return tab === "sql" ? $("dataUploadCard") : $("ragUploadCard"); }
+
+function uploadBox(text, bad) {
+  return '<div class="card" style="padding:12px 14px;margin:0;"><div class="' +
+    (bad ? "error" : "hint") + '" style="white-space:pre-wrap;">' + esc(text) + "</div></div>";
 }
-function doIngest(replace) {
-  var f = $("ragFile").files[0];
-  var btn = $("ragIngestBtn"), msg = $("ragIngestMsg");
-  // 大文件分流：≥ ASYNC_THRESHOLD_MB 走异步任务（受理即返回，轮询进度）
-  if (f.size >= ASYNC_THRESHOLD_MB * 1024 * 1024) {
-    btn.disabled = true;
-    btn.textContent = "上传受理中…";
-    doIngestAsync(f, replace);
+
+function classifyHint(c) {
+  var kinds = { structured: "识别为数据表", document: "识别为文档",
+                database: "识别为数据库", unknown: "未能确定类型" };
+  var conf = { high: "把握高", medium: "把握中", low: "把握低" };
+  return (kinds[c.kind] || "未能确定类型") + "（" + (conf[c.confidence] || "") + "）";
+}
+
+function renderClassifyCard(tab, c, file) {
+  var el = uploadCardEl(tab);
+  var reasons = (c.reasons || []).map(function (r) { return "· " + r; }).join("\n");
+  var html = '<div class="card" style="padding:12px 14px;margin:0;">' +
+    "<h3>" + esc(classifyHint(c)) + "</h3>" +
+    '<div style="white-space:pre-wrap;font-size:13px;line-height:1.7;">' + esc(reasons) + "</div>" +
+    '<div class="hint" style="margin-top:6px;">文件：' + esc(file.name) + "（" +
+      (file.size / 1024).toFixed(1) + " KB）</div>";
+  if (c.kind === "database") {
+    html += '<div class="row" style="margin-top:10px;">' +
+      '<button class="btn" type="button" data-act="db">接入为数据源</button>' +
+      '<button class="btn gray small" type="button" data-act="cancel">取消</button></div></div>';
+  } else if (c.kind === "unknown") {
+    html += '<div class="hint" style="margin-top:8px;">无法确定处理方式，请手动选择：</div>' +
+      '<div class="row" style="margin-top:8px;">' +
+      '<button class="btn gray small" type="button" data-act="kb">存入知识库</button>' +
+      '<button class="btn gray small" type="button" data-act="data">导入数据表</button>' +
+      '<button class="btn gray small" type="button" data-act="cancel">取消</button></div></div>';
+  } else {
+    var primary = c.route === "data" ? "data" : "kb";
+    var primaryText = primary === "data" ? "导入数据表" : "存入知识库";
+    var alt = primary === "data" ? "kb" : "data";
+    var altText = primary === "data" ? "改判：存入知识库" : "改判：导入数据表";
+    html += '<div class="row" style="margin-top:10px;">' +
+      '<button class="btn" type="button" data-act="' + primary + '">' + primaryText + "</button>" +
+      '<button class="btn gray small" type="button" data-act="' + alt + '">' + altText + "</button>" +
+      '<button class="btn gray small" type="button" data-act="cancel">取消</button></div></div>';
+  }
+  el.innerHTML = html;
+  Array.prototype.forEach.call(el.querySelectorAll("[data-act]"), function (b) {
+    b.addEventListener("click", function () {
+      var act = b.getAttribute("data-act");
+      if (act === "cancel") { el.innerHTML = ""; return; }
+      if (act === "db") { connectSqliteFile(file, tab); return; }
+      if (act === "kb") { kbIngest(file, tab); return; }
+      if (act === "data") { importDataFile(file, tab); }
+    });
+  });
+}
+
+function startClassify(tab, file) {
+  if (!file) {
+    if (tab === "sql") $("dsMsg").textContent = "请先选择文件";
+    else $("ragIngestMsg").textContent = "请先选择文件";
     return;
   }
-  btn.disabled = true;
-  btn.textContent = replace ? "替换中…" : "入库中…";
+  if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+    uploadCardEl(tab).innerHTML = uploadBox(
+      "文件 " + (file.size / 1024 / 1024).toFixed(1) + "MB 超过上限 " +
+      MAX_UPLOAD_MB + "MB，请压缩或拆分后再上传", true);
+    return;
+  }
+  uploadCardEl(tab).innerHTML = uploadBox("正在识别文件类型…");
   var fd = new FormData();
-  fd.append("file", f);
+  fd.append("file", file);
+  apiJson("/ingest/classify", { method: "POST", body: fd })
+    .then(function (c) { renderClassifyCard(tab, c, file); })
+    .catch(function (e) { uploadCardEl(tab).innerHTML = uploadBox("识别失败：" + e.message, true); });
+}
+
+/* 知识问答：解析中 → 已入库 N 个分块（过程不对用户暴露） */
+function kbCard(tab, text, bad) {
+  var el = uploadCardEl(tab);
+  el.innerHTML = uploadBox(text, bad);
+  return el;
+}
+function kbIngest(file, tab) {
+  var el = kbCard(tab, "解析中…");
+  apiJson("/rag/documents")
+    .then(function (d) {
+      var exists = (d.documents || []).some(function (x) { return x.source === file.name; });
+      if (!exists) { kbUpload(file, tab, false); return; }
+      el.innerHTML = '<div class="card" style="padding:12px 14px;margin:0;">' +
+        '<div class="hint">知识库已有同名文档「' + esc(file.name) + "」，是否覆盖？</div>" +
+        '<div class="row" style="margin-top:8px;">' +
+        '<button class="btn" type="button" data-act="replace">覆盖并入库</button>' +
+        '<button class="btn gray small" type="button" data-act="cancel">取消</button></div></div>';
+      el.querySelector("[data-act=replace]").addEventListener("click", function () {
+        kbUpload(file, tab, true);
+      });
+      el.querySelector("[data-act=cancel]").addEventListener("click", function () {
+        el.innerHTML = "";
+      });
+    })
+    .catch(function () { kbUpload(file, tab, false); });
+}
+function kbUpload(file, tab, replace) {
+  kbCard(tab, "解析中…");
+  var large = file.size >= 10 * 1024 * 1024;   // 与后端异步阈值一致
+  var fd = new FormData();
+  fd.append("file", file);
   if (replace) fd.append("replace", "true");
   var dd = $("ragDocDate") ? $("ragDocDate").value : "";
   var dv = $("ragDocVersion") ? $("ragDocVersion").value.trim() : "";
   if (dd) fd.append("doc_date", dd);
   if (dv) fd.append("doc_version", dv);
-  apiJson("/rag/ingest", {
-    method: "POST",
-    body: fd,
-  })
+  if (large) {
+    apiJson("/rag/ingest/async", { method: "POST", body: fd })
+      .then(function (t) { pollKbTask(t.task_id, tab); })
+      .catch(function (e) { kbCard(tab, "入库失败：" + e.message, true); });
+    return;
+  }
+  apiJson("/rag/ingest", { method: "POST", body: fd })
     .then(function (d) {
-      msg.textContent = d.replaced
-        ? "已替换旧版（删除 " + d.replaced_chunks + " 块），新入库 " + d.chunks + " 块：" + d.filename
-        : "已入库 " + d.chunks + " 块（" + d.filename + "）";
-      $("ragFile").value = "";
-      resetIngestBtn();
+      kbCard(tab, "已入库 " + d.chunks + " 个分块（" + d.filename + "）" +
+        (d.replaced ? "，已替换旧版" : ""));
+      if ($("ragFile")) $("ragFile").value = "";
       loadRagDocs();
+      refreshStatusBar();
     })
-    .catch(function (e) {
-      msg.textContent = "入库失败：" + e.message;
-      resetIngestBtn();
-    });
+    .catch(function (e) { kbCard(tab, "入库失败：" + e.message, true); });
 }
-var MAX_UPLOAD_MB = 50;  // 与后端 MAX_UPLOAD_MB 保持一致
-var ASYNC_THRESHOLD_MB = 10;  // 与后端 ASYNC_THRESHOLD_MB 保持一致：超过即走异步任务
-function stageText(s) {
-  if (!s) return "排队中";
-  if (s === "parsing") return "解析文档…";
-  if (s.indexOf("ocr:") === 0) return "OCR 识别扫描页 " + s.slice(4) + "（较慢，请耐心等待）";
-  if (s.indexOf("pages:") === 0) return "处理页码 " + s.slice(6);
-  if (s.indexOf("chunks:") === 0) return "已切分 " + s.slice(7) + " 块";
-  if (s.indexOf("embedding:") === 0) return "向量化 " + s.slice(10) + " 块…";
-  if (s === "storing") return "写入向量库…";
-  if (s === "queued" || s === "starting") return "排队中…";
-  if (s === "done") return "完成";
-  return s;
-}
-function doIngestAsync(f, replace) {
-  var btn = $("ragIngestBtn"), msg = $("ragIngestMsg");
-  var fd = new FormData();
-  fd.append("file", f);
-  if (replace) fd.append("replace", "true");
-  var dd = $("ragDocDate") ? $("ragDocDate").value : "";
-  var dv = $("ragDocVersion") ? $("ragDocVersion").value.trim() : "";
-  if (dd) fd.append("doc_date", dd);
-  if (dv) fd.append("doc_version", dv);
-  apiJson("/rag/ingest/async", {
-    method: "POST",
-    body: fd,
-  })
-    .then(function (d) {
-      var line = "任务已受理：" + d.filename + "（" + d.size_mb + "MB，" +
-        (d.pipeline === "stream" ? "按页流水线" : "标准管线") + "）";
-      if (d.priority === "low") line += "，大文件已进低优先级队列";
-      line += "，后台处理中…";
-      msg.textContent = line;
-      pollAsyncTask(d.task_id, msg, btn);
-    })
-    .catch(function (e) {
-      msg.textContent = "入库失败：" + e.message;
-      resetIngestBtn();
-    });
-}
-function pollAsyncTask(taskId, msg, btn) {
+function pollKbTask(taskId, tab) {
   apiJson("/rag/tasks/" + taskId)
     .then(function (t) {
       if (t.status !== "completed") {
-        var line = "处理中：" + stageText(t.stage || t.current);
-        if (t.priority === "low") line += "（低优先级队列）";
-        msg.textContent = line;
-        setTimeout(function () { pollAsyncTask(taskId, msg, btn); }, 1000);
+        kbCard(tab, "解析中…" + (t.stage ? "（" + t.stage + "）" : ""));
+        setTimeout(function () { pollKbTask(taskId, tab); }, 1000);
         return;
       }
       if (t.failed && t.failed.length) {
-        msg.textContent = "入库失败：" + t.failed[0].error;
-      } else {
-        msg.textContent = "已入库 " + t.results[0].chunks + " 块（" + t.results[0].source + "）";
-        $("ragFile").value = "";
+        kbCard(tab, "入库失败：" + t.failed[0].error, true);
+        return;
       }
-      resetIngestBtn();
+      var first = (t.results || [])[0] || {};
+      kbCard(tab, "已入库 " + (first.chunks || 0) + " 个分块（" + (first.source || "文件") + "）");
       loadRagDocs();
     })
-    .catch(function (e) {
-      msg.textContent = "查询进度失败：" + e.message;
-      resetIngestBtn();
-    });
+    .catch(function (e) { kbCard(tab, "查询进度失败：" + e.message, true); });
 }
-function ingestRag() {
-  var f = $("ragFile").files[0];
-  var btn = $("ragIngestBtn"), msg = $("ragIngestMsg");
-  if (!f) { msg.textContent = "请先选择文件"; return; }
-  if (f.size > MAX_UPLOAD_MB * 1024 * 1024) {
-    msg.textContent = "文件 " + (f.size / 1024 / 1024).toFixed(1) +
-      "MB 超过上限 " + MAX_UPLOAD_MB + "MB，请压缩或拆分后再上传";
-    resetIngestBtn();
-    return;
-  }
 
-  // 第二步：用户已在3秒内确认替换，直接执行
-  if (btn.dataset.confirmReplace === "1") { doIngest(true); return; }
-
-  // 第一步：先查重，同名则进入两步确认（避免大文件传完才报冲突）
-  btn.disabled = true; btn.textContent = "检查中…"; msg.textContent = "";
-  apiJson("/rag/documents")
+/* 数据问答：Excel/CSV 建表，显示已识别 N 张表 */
+function importDataFile(file, tab) {
+  kbCard(tab, "识别并建表中…");
+  var fd = new FormData();
+  fd.append("file", file);
+  apiJson("/datasource/upload", { method: "POST", body: fd })
     .then(function (d) {
-      var exists = (d.documents || []).some(function (x) { return x.source === f.name; });
-      if (exists) {
-        btn.disabled = false;
-        btn.classList.add("warn");
-        btn.textContent = "同名已存在，确认替换？";
-        btn.dataset.confirmReplace = "1";
-        clearTimeout(btn._timer);
-        btn._timer = setTimeout(resetIngestBtn, 5000);
-      } else {
-        doIngest(false);
-      }
+      var tables = d.tables || [];
+      var lines = tables.map(function (t) {
+        return "· " + t.table + "（" + t.rows + " 行，" + (t.columns || []).length + " 列）";
+      }).join("\n");
+      kbCard(tab, "已识别 " + tables.length + " 张表\n" + lines);
+      refreshStatusBar(true);
     })
-    .catch(function () { doIngest(false); });  // 查重失败不阻塞，后端409兜底
+    .catch(function (e) { kbCard(tab, "建表失败：" + e.message, true); });
+}
+
+/* 数据问答：SQLite 直接接入为当前数据源 */
+function connectSqliteFile(file, tab) {
+  kbCard(tab, "上传并扫描中…");
+  var fd = new FormData();
+  fd.append("file", file);
+  apiJson("/datasource/sqlite", { method: "POST", body: fd })
+    .then(function (ds) {
+      kbCard(tab, "已接入 " + ds.filename + "：识别 " + ds.table_count + " 张可用表");
+      refreshStatusBar();
+    })
+    .catch(function (e) { kbCard(tab, "接入失败：" + e.message, true); });
 }
 
 /* ---------- 批量导入：文件夹选择 + 异步任务轮询 ---------- */
@@ -1120,99 +1182,122 @@ function deleteRagDoc(name, btn) {
     });
 }
 
-/* ============ 面板 3：文档转换 ============ */
-function renderDoc(data) {
-  var html = "";
-  if (data.status === "ok") {
-    html += '<div class="card"><h3>' + (data.message ? "来自对话记忆" : "转换成功") + "</h3>";
-    if (data.message) html += '<div class="answer">' + esc(data.message) + "</div>";
-    if (data.plan && data.plan.source_format) html += '<div class="meta">' + esc(data.plan.source_format) + " → " + esc(data.plan.target_format) + "</div>";
-    if (data.retry_count > 0) html += '<div class="meta">经 ' + data.retry_count + " 次重试后通过自动校验</div>";
-    if (data.memory_hint) html += '<div class="hint">' + esc(data.memory_hint) + "</div>";
-    if (data.output_filename) html += '<button class="dl-btn" type="button" data-dl="' + esc(data.output_filename) + '">下载结果：' + esc(data.output_filename) + "</button>";
-    html += "</div>";
-  } else if (data.error) {
-    html += '<div class="card"><div class="error">' + esc(data.error) + "</div></div>";
-  } else {
-    html += '<div class="card"><div class="empty">暂无结果。</div></div>';
-  }
-  $("docResult").innerHTML = html;
-  var dl = $("docResult").querySelector("[data-dl]");
-  if (dl) dl.addEventListener("click", function () { downloadWithAuth(dl.getAttribute("data-dl")); });
-  refreshDocMemory();
-}
-/* 下载需要带令牌：用 fetch 取 blob 再触发保存（普通 <a> 无法附带 Authorization） */
-function downloadWithAuth(name) {
-  apiFetch("/doc/download/" + encodeURIComponent(name))
-    .then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.blob();
-    })
-    .then(function (blob) {
-      var a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
-    })
-    .catch(function (e) { alert("下载失败：" + e.message); });
-}
-function convertDoc() {
-  var f = $("docFile").files[0];
-  var inst = $("docInstruction").value.trim();
-  if (!inst) { $("docResult").innerHTML = '<div class="card"><div class="error">请输入转换指令</div></div>'; return; }
-  var btn = $("docBtn"); btn.disabled = true; btn.textContent = "提交中…";
+/* ---------- 状态条与数据源：服务状态、表数量、快照日全部来自后端 ---------- */
+var _dsState = null;
 
-  // 未选文件：沿用会话里最近一次上传的文件（"再把它转成 PDF"）；
-  // 没有可沿用文件时后端明确报错，不猜测文件。
-  if (!f) {
-    $("docResult").innerHTML = loading("正在沿用上文文件…");
-    var fd2 = new FormData(); fd2.append("instruction", inst);
-    apiJson("/doc/convert/followup", { method: "POST", body: fd2 })
-      .then(renderDoc)
-      .catch(function (e) {
-        $("docResult").innerHTML = '<div class="card"><div class="error">提交失败：' + esc(e.message) + "</div></div>";
-      })
-      .finally(function () { btn.disabled = false; btn.textContent = "开始转换"; });
+function badgeSet(cls, text) {
+  var el = $("healthBadge");
+  el.className = "badge" + (cls ? " " + cls : "");
+  el.innerHTML = '<span class="dot"></span>' + text;
+}
+
+function renderStatusBar(health, ds, dsErr) {
+  if (!health || (health.status !== "ok" && health.status !== "degraded")) {
+    badgeSet("bad", "服务异常（后端不可用）");
     return;
   }
-
-  $("docResult").innerHTML = loading("正在提交转换任务…");
-  var fd = new FormData(); fd.append("file", f); fd.append("instruction", inst);
-  // 异步转换：提交拿 task_id → 1 秒轮询任务状态，避免大文件长时间占用连接
-  apiJson("/doc/convert/async", { method: "POST", body: fd })
-    .then(function (t) {
-      $("docResult").innerHTML = loading("任务已受理（" + t.task_id + "），Agent 正在规划、转换并反思校验…");
-      pollDocTask(t.task_id, btn);
-    })
-    .catch(function (e) {
-      $("docResult").innerHTML = '<div class="card"><div class="error">提交失败：' + esc(e.message) + "</div></div>";
-      btn.disabled = false; btn.textContent = "开始转换";
-    });
+  var prefix = health.status === "ok" ? "服务正常" : "服务降级";
+  var cls = health.status === "ok" ? "ok" : "warn";
+  if (dsErr) { badgeSet("warn", prefix + " · 数据源状态读取失败"); return; }
+  if (!ds || !ds.connected) {
+    badgeSet("warn", prefix + " · " + ((ds && ds.state === "missing") ? "数据源文件丢失" : "未接入数据库"));
+    return;
+  }
+  badgeSet(cls, prefix + " · " + ds.table_count + " 张表 · 快照 " + esc(ds.snapshot_date));
 }
-function pollDocTask(taskId, btn) {
-  var timer = setInterval(function () {
-    apiJson("/doc/tasks/" + taskId)
-      .then(function (t) {
-        if (t.status === "processing") return;   // 继续轮询
-        clearInterval(timer);
-        btn.disabled = false; btn.textContent = "开始转换";
-        renderDoc(t.result && t.result.status ? t.result : { status: "error", error: t.error || "转换失败" });
-      })
-      .catch(function (e) {
-        clearInterval(timer);
-        btn.disabled = false; btn.textContent = "开始转换";
-        $("docResult").innerHTML = '<div class="card"><div class="error">查询任务失败：' + esc(e.message) + "</div></div>";
+
+/* 数据源面板：连接信息 + 纳入/排除的表及原因（来自 /datasource/status） */
+function renderDsPanel(ds) {
+  _dsState = ds;
+  var name = $("dsName"), meta = $("dsMeta"), box = $("dsTables");
+  var body = $("dsTablesBody"), sum = $("dsTablesSummary");
+  if (!ds || !ds.connected) {
+    name.textContent = (ds && ds.state === "missing") ? "数据源文件不存在" : "未接入数据库";
+    meta.textContent = "接入后按真实表结构问数";
+    box.style.display = "none";
+    return;
+  }
+  name.textContent = ds.filename + (ds.kind === "demo" ? "（示例库）" : "");
+  meta.textContent = ds.table_count + " 张可用表 · 排除 " + ds.excluded_count + " 张 · 快照 "
+    + ds.snapshot_date + "（" + (ds.snapshot_note || ds.snapshot_source) + "） · 扫描 "
+    + ds.scan.duration_ms + "ms" + (ds.scan.cached ? "（缓存）" : "");
+  var lines = [];
+  (ds.tables || []).forEach(function (t) {
+    var cols = (t.columns || []).map(function (c) { return c.name; }).join("、");
+    lines.push("✓ " + t.name + "（" + (t.rows_capped ? "≥" : "") + t.rows + " 行，"
+      + (t.columns || []).length + " 列）\n    " + cols);
+  });
+  (ds.excluded || []).forEach(function (t) {
+    lines.push("✗ " + t.name + " —— 已排除：" + t.reason);
+  });
+  body.textContent = lines.join("\n") || "（无表）";
+  sum.textContent = "表清单与排除原因（纳入 " + ds.table_count + " / 共 " + ds.total_tables + "）";
+  box.style.display = "";
+}
+
+function refreshStatusBar(forceScan) {
+  badgeSet("", "加载中…");
+  $("dsName").textContent = "加载中…";
+  $("dsMeta").textContent = "";
+  $("dsTables").style.display = "none";
+  var healthP = fetch("/api/health")
+    .then(function (r) { return r.json(); })
+    .catch(function () { return null; });
+  var dsP = tokenValid()
+    ? apiJson("/datasource/status" + (forceScan ? "?refresh=1" : ""))
+        .catch(function (e) { return { __err: e.message }; })
+    : Promise.resolve(null);
+  return Promise.all([healthP, dsP]).then(function (arr) {
+    var health = arr[0], ds = arr[1];
+    var dsErr = !!(ds && ds.__err);
+    if (dsErr) ds = null;
+    renderStatusBar(health, ds, dsErr);
+    if (dsErr) {
+      $("dsName").textContent = "状态读取失败";
+      $("dsMeta").textContent = arr[1].__err || "";
+      return;
+    }
+    renderDsPanel(ds);
+  });
+}
+
+function dsSetMsg(text, bad) {
+  var el = $("dsMsg");
+  el.textContent = text || "";
+  el.style.color = bad ? "#c0392b" : "";
+}
+
+function connectDemo() {
+  dsSetMsg("接入中…");
+  apiJson("/datasource/connect-demo", { method: "POST" })
+    .then(function (ds) {
+      return refreshStatusBar().then(function () {
+        dsSetMsg("已接入示例库：" + ds.table_count + " 张可用表");
       });
-  }, 1000);
+    })
+    .catch(function (e) { dsSetMsg(e.message, true); });
 }
 
-/* ---------- 健康检查（主服务 SQL） ---------- */
-function checkHealth() {
-  fetch("/health").then(function (r) { return r.json(); }).then(function (h) {
-    if (h.status === "ok") { $("healthBadge").className = "badge ok"; $("healthBadge").innerHTML = '<span class="dot"></span>服务正常 · ' + h.database.tables + " 张表 · 快照 " + h.snapshot_date; }
-    else { $("healthBadge").className = "badge bad"; $("healthBadge").innerHTML = '<span class="dot"></span>配置不完整（见 /health）'; }
-  }).catch(function () { $("healthBadge").className = "badge bad"; $("healthBadge").innerHTML = '<span class="dot"></span>后端未连接'; });
+function uploadSqlite(file) {
+  if (!file) return;
+  var fd = new FormData();
+  fd.append("file", file);
+  dsSetMsg("上传并扫描中…");
+  apiJson("/datasource/sqlite", { method: "POST", body: fd })
+    .then(function (ds) {
+      return refreshStatusBar().then(function () {
+        dsSetMsg("已接入 " + ds.filename + "：识别 " + ds.table_count + " 张可用表");
+      });
+    })
+    .catch(function (e) { dsSetMsg(e.message, true); });
+}
+
+function disconnectDatasource() {
+  apiJson("/datasource/connection", { method: "DELETE" })
+    .then(function () {
+      return refreshStatusBar().then(function () { dsSetMsg("已断开当前数据源"); });
+    })
+    .catch(function (e) { dsSetMsg(e.message, true); });
 }
 
 /* ---------- 会话记忆：状态显示与清空 ---------- */
@@ -1221,17 +1306,6 @@ function updateMemInfo(id, n, extra) {
   if (n > 0) el.textContent = "会话记忆：已记住 " + n + " 轮" + (extra ? "（" + extra + "）" : "");
   else el.textContent = "会话记忆：0 轮" + (extra ? "（" + extra + "）" : "");
 }
-function refreshDocMemory() {
-  apiJson("/doc/session").then(function (d) {
-    var el = $("docMemInfo"); if (!el) return;
-    if (d.last_filename) {
-      el.textContent = "会话记忆：上次 " + d.last_filename + " → " + (d.target_format || "?") +
-                       "（可直接说「再把它转成…」）";
-    } else {
-      el.textContent = "会话记忆：暂无转换记录";
-    }
-  }).catch(function () {});
-}
 function refreshMemoryInfo() {
   apiJson("/rag/session").then(function (d) {
     updateMemInfo("ragMemInfo", d.turns, "支持「那它的精度呢」这类追问");
@@ -1239,7 +1313,6 @@ function refreshMemoryInfo() {
   apiJson("/session").then(function (d) {
     updateMemInfo("sqlMemInfo", d.turns, "可追问「再按部门分组」");
   }).catch(function () {});
-  refreshDocMemory();
 }
 function bindSessionClear(btnId, path, after) {
   var b = $(btnId); if (!b) return;
@@ -1258,7 +1331,6 @@ bindSessionClear("ragMemClear", "/rag/session", function () {
 bindSessionClear("sqlMemClear", "/session", function () {
   updateMemInfo("sqlMemInfo", 0, "可追问「再按部门分组」");
 });
-bindSessionClear("docMemClear", "/doc/session", refreshDocMemory);
 
 /* ---------- 事件绑定 ---------- */
 $("sqlBtn").addEventListener("click", askSql);
@@ -1268,83 +1340,159 @@ Array.prototype.forEach.call(document.querySelectorAll("#panel-sql .examples but
 });
 $("ragBtn").addEventListener("click", askRag);
 $("ragQ").addEventListener("keydown", function (e) { if (e.key === "Enter") askRag(); });
-$("ragIngestBtn").addEventListener("click", ingestRag);
-$("ragBatchBtn").addEventListener("click", startBatchIngest);
-$("ragFile").addEventListener("change", resetIngestBtn);
-$("ragRefreshBtn").addEventListener("click", loadRagDocs);
-$("docBtn").addEventListener("click", convertDoc);
-$("docInstruction").addEventListener("keydown", function (e) {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); convertDoc(); }
+$("ragIngestBtn").addEventListener("click", function () {
+  startClassify("rag", $("ragFile").files && $("ragFile").files[0]);
 });
+$("ragFile").addEventListener("change", function () { $("ragIngestMsg").textContent = ""; });
+$("dataUploadBtn").addEventListener("click", function () {
+  startClassify("sql", $("dataUploadFile").files && $("dataUploadFile").files[0]);
+});
+$("dataUploadFile").addEventListener("change", function () { $("dsMsg").textContent = ""; });
+$("ragBatchBtn").addEventListener("click", startBatchIngest);
+$("ragRefreshBtn").addEventListener("click", loadRagDocs);
+$("dsDemoBtn").addEventListener("click", connectDemo);
+$("dsUploadBtn").addEventListener("click", function () { $("dsSqliteFile").click(); });
+$("dsSqliteFile").addEventListener("change", function () {
+  uploadSqlite(this.files && this.files[0]);
+  this.value = "";
+});
+$("dsRefreshBtn").addEventListener("click", function () {
+  dsSetMsg("重新扫描中…");
+  refreshStatusBar(true).then(function () { dsSetMsg("扫描已刷新"); });
+});
+$("dsDisconnectBtn").addEventListener("click", disconnectDatasource);
 
-/* ---------- 登录 / 登出 ---------- */
+/* ---------- 登录 / 注册 / 改密 ---------- */
+var _registerMode = false;
 function isLoggedIn() { return tokenValid(); }
-function showLogin() { $("loginView").style.display = ""; $("mainView").style.display = "none"; }
+function showLogin() {
+  $("pwdView").style.display = "none";
+  $("loginView").style.display = ""; $("mainView").style.display = "none";
+}
 function showMain() {
-  $("loginView").style.display = "none"; $("mainView").style.display = "";
-  $("loginBadge").innerHTML = '<span class="dot"></span>已登录：' + esc(userId());
+  $("loginView").style.display = "none"; $("pwdView").style.display = "none"; $("mainView").style.display = "";
+  var name = localStorage.getItem("display_name") || userId();
+  $("loginBadge").innerHTML = '<span class="dot"></span>已登录：' + esc(name);
   renderHist("sql_history"); renderHist("rag_history");
-  checkHealth();
+  refreshStatusBar();
   refreshMemoryInfo();
 }
+function setAuthMode(reg) {
+  _registerMode = reg;
+  $("authSub").textContent = reg ? "注册新账号后自动登录" : "登录后开始使用";
+  $("regConfirm").style.display = reg ? "" : "none";
+  $("regDisplay").style.display = reg ? "" : "none";
+  $("loginBtn").textContent = reg ? "注 册" : "登 录";
+  $("modeToggle").textContent = reg ? "已有账号？登录" : "没有账号？注册";
+  $("loginMsg").textContent = "";
+}
+/* 统一提取服务端错误：{code, detail} 或旧格式 {ok:false, error} */
+function _authError(r) {
+  return r.json().then(function (d) {
+    throw new Error(d.detail || d.error || ("HTTP " + r.status));
+  }).catch(function (e) {
+    if (e instanceof Error && e.message) throw e;
+    throw new Error("HTTP " + r.status);
+  });
+}
 function doLogin() {
-  var account = $("loginAccount").value.trim();
-  var key = $("loginKey").value.trim();
-  if (!/^[A-Za-z0-9_-]{1,32}$/.test(account)) {
-    $("loginMsg").textContent = "账号仅限字母、数字、下划线、连字符";
+  var username = $("loginAccount").value.trim();
+  var pwd = $("loginKey").value;
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(username)) {
+    $("loginMsg").textContent = "用户名仅限字母、数字、下划线、连字符（1-32 位）";
     return;
   }
-  $("loginMsg").textContent = "登录中…";
-  fetch("/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account: account, password: key }) })
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (d.ok && d.token) {
-        _expiredOnce = false;
-        localStorage.setItem("account", d.account);
-        localStorage.setItem("token", d.token);  // 身份以令牌为准，不再保存 X-User/X-API-Key
-        localStorage.removeItem("api_key");
-        $("loginMsg").textContent = "";
-        showMain();
-      } else {
-        $("loginMsg").textContent = d.error || "登录失败";
-      }
-    })
-    .catch(function (e) { $("loginMsg").textContent = "登录请求失败：" + e.message; });
+  if (!pwd) { $("loginMsg").textContent = "请输入密码"; return; }
+  if (_registerMode) {
+    if (pwd.length < 8) { $("loginMsg").textContent = "密码至少 8 位"; return; }
+    if (pwd !== $("regConfirm").value) { $("loginMsg").textContent = "两次输入的密码不一致"; return; }
+  }
+  $("loginMsg").textContent = _registerMode ? "注册中…" : "登录中…";
+  var url = _registerMode ? "/auth/register" : "/auth/login";
+  var payload = _registerMode
+    ? { username: username, password: pwd, confirm_password: $("regConfirm").value, display_name: $("regDisplay").value.trim() }
+    : { username: username, password: pwd };
+  fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+    .then(function (r) { return r.ok ? r.json() : _authError(r); })
+    .then(function (d) { return _registerMode ? _loginAfterRegister(username, pwd) : _applyLogin(d); })
+    .catch(function (e) { $("loginMsg").textContent = e.message || "请求失败"; });
 }
-function doLogout() {
+/* 注册成功后自动登录，少一步操作 */
+function _loginAfterRegister(username, pwd) {
+  return fetch("/auth/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: username, password: pwd })
+  }).then(function (r) { return r.ok ? r.json() : _authError(r); }).then(_applyLogin);
+}
+function _applyLogin(d) {
+  if (!d.ok || !d.token) throw new Error(d.error || "登录失败");
+  _expiredOnce = false;
+  localStorage.setItem("account", d.account);
+  localStorage.setItem("display_name", (d.user && d.user.display_name) || "");
+  localStorage.setItem("role", (d.user && d.user.role) || "user");
+  localStorage.setItem("token", d.token);
+  localStorage.removeItem("api_key");
+  $("loginMsg").textContent = ""; $("loginKey").value = "";
+  setAuthMode(false);
+  showMain();
+}
+function doLogout(msg) {
   _expiredOnce = false;
   clearSession();
-  $("loginAccount").value = ""; $("loginKey").value = ""; $("loginMsg").textContent = "";
+  $("loginAccount").value = ""; $("loginKey").value = "";
+  $("regConfirm").value = ""; $("regDisplay").value = "";
+  $("loginMsg").textContent = msg || "";
+  setAuthMode(false);
   showLogin();
 }
-function detectAuth() {
-  fetch("/api/health").then(function (r) { return r.json(); }).then(function (h) {
-    if (h.password_required) {
-      $("loginKey").style.display = "";
-      $("loginHint").textContent = "请输入账号与登录密码，登录后由服务端签发访问令牌。";
-    } else {
-      $("loginKey").style.display = "none";
-      $("loginHint").textContent = "当前为演示模式（未配置密码），输入账号即可登录。";
-    }
-  }).catch(function () { $("loginHint").textContent = "无法连接服务，请确认后端已启动。"; });
+function openPwdView() {
+  $("pwdOld").value = ""; $("pwdNew").value = ""; $("pwdConfirm").value = ""; $("pwdMsg").textContent = "";
+  $("mainView").style.display = "none"; $("loginView").style.display = "none"; $("pwdView").style.display = "";
+}
+function changePassword() {
+  var oldP = $("pwdOld").value, newP = $("pwdNew").value, confirmP = $("pwdConfirm").value;
+  if (!oldP || !newP) { $("pwdMsg").textContent = "请填写旧密码与新密码"; return; }
+  if (newP.length < 8) { $("pwdMsg").textContent = "新密码至少 8 位"; return; }
+  if (newP !== confirmP) { $("pwdMsg").textContent = "两次输入的新密码不一致"; return; }
+  $("pwdMsg").textContent = "提交中…";
+  apiJson("/auth/password", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ old_password: oldP, new_password: newP, confirm_password: confirmP })
+  }).then(function () {
+    doLogout("密码已修改，请用新密码重新登录");
+  }).catch(function (e) { $("pwdMsg").textContent = e.message || "修改失败"; });
 }
 
 /* 登录/登出事件 */
 $("loginBtn").addEventListener("click", doLogin);
+$("modeToggle").addEventListener("click", function () { setAuthMode(!_registerMode); });
 $("loginAccount").addEventListener("keydown", function (e) { if (e.key === "Enter") doLogin(); });
 $("loginKey").addEventListener("keydown", function (e) { if (e.key === "Enter") doLogin(); });
-$("logoutBtn").addEventListener("click", doLogout);
+$("regConfirm").addEventListener("keydown", function (e) { if (e.key === "Enter") doLogin(); });
+$("logoutBtn").addEventListener("click", function () { doLogout(""); });
+$("changePwdBtn").addEventListener("click", openPwdView);
+$("pwdBtn").addEventListener("click", changePassword);
+$("pwdCancel").addEventListener("click", function () { $("pwdView").style.display = "none"; showMain(); });
 
-/* 初始化：检测认证状态；登录态必须与令牌一致（有 account 但无有效 token 也要回登录页） */
-detectAuth();
-if (isLoggedIn()) {
-  showMain();
-} else {
-  var hadLogin = !!authToken() || !!localStorage.getItem("account");
-  clearSession();
-  showLogin();
-  if (hadLogin) $("loginMsg").textContent = "登录已过期，请重新登录";
-}
+/* 初始化：本地令牌先校验 exp，再向 /auth/me 确认账号仍有效（被禁用/改密会自动回登录页） */
+(function initAuth() {
+  if (!isLoggedIn()) {
+    var hadLogin = !!authToken() || !!localStorage.getItem("account");
+    clearSession();
+    showLogin();
+    if (hadLogin) $("loginMsg").textContent = "登录已过期，请重新登录";
+    return;
+  }
+  apiFetch("/auth/me").then(function (r) { return r.json(); }).then(function (d) {
+    _expiredOnce = false;
+    localStorage.setItem("account", d.user.username);
+    localStorage.setItem("display_name", d.user.display_name || "");
+    localStorage.setItem("role", d.user.role || "user");
+    showMain();
+  }).catch(function () {
+    if (!tokenValid()) showLogin();
+  });
+})();
 </script>
 </body>
 </html>
