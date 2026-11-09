@@ -38,6 +38,24 @@ DB_PATH = Path(os.getenv("DB_PATH", str(DATA_DIR / "db" / "ic_substrate.db")))
 if not DB_PATH.is_absolute():
     DB_PATH = PROJECT_ROOT / DB_PATH
 
+# 用户上传数据表（xlsx/csv 导入）独立落库，避免污染只读业务库；
+# 查询时由 executor 以只读 ATTACH 挂成 userdb 附加库。
+USER_DB_PATH = Path(os.getenv("USER_DB_PATH", str(DATA_DIR / "db" / "user_uploads.db")))
+if not USER_DB_PATH.is_absolute():
+    USER_DB_PATH = PROJECT_ROOT / USER_DB_PATH
+
+# 指标口径字典（人工确认维护；缺失/解析失败时主链路自动降级）
+METRIC_DICT_PATH = Path(
+    os.getenv("METRIC_DICT_PATH", str(SEMANTIC_DIR / "metric_dictionary.yaml"))
+)
+if not METRIC_DICT_PATH.is_absolute():
+    METRIC_DICT_PATH = PROJECT_ROOT / METRIC_DICT_PATH
+
+# 上传数据源大小上限（与 RAG 入库的 50MB 口径一致）
+MAX_DATASOURCE_MB = int(float(os.getenv("MAX_DATASOURCE_MB", "50")))
+# 单表最多导入行数，防止超大表拖垮内存/建库
+MAX_DATASOURCE_ROWS = int(os.getenv("MAX_DATASOURCE_ROWS", "100000"))
+
 # ----------------------------------------------------------------------
 # 业务参数
 # ----------------------------------------------------------------------

@@ -1,0 +1,180 @@
+# 指标口径字典（人工确认）
+# 生成 SQL 前由 skills/text2sql/metric_dict.py 注入 prompt。
+# 修改后即时生效（每次请求重新读取）；解析失败自动降级，不影响主链路。
+# 注意：最多注入 12 条（MAX_METRICS_IN_PROMPT），当前 11 条。
+version: 2
+updated_at: "2026-11-09"
+metrics:
+  - name: 良率
+    aliases: [良率, 成品率, Yield, yield]
+    definition: 一次产出中合格排板数量占投入排板数量的比例；算产出必须排除返工重过站，否则会重复累计。
+    formula: SUM(good_panels) * 1.0 / SUM(input_panels)
+    includes_rework: false
+    scope: 过站主记录（is_rework_pass = 0）且 input_panels > 0；工序级按 process_id 分组先 SUM 再相除；批次/产品/全厂口径同理。
+    source: metrics.md + IC载板制造全流程.docx（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 不良率
+    aliases: [不良率, 缺陷率, Defect Rate]
+    definition: 一次产出中非合格数量（报废 + 返工）占投入数量的比例，与良率互补。
+    formula: (SUM(scrap_panels) + SUM(rework_panels)) * 1.0 / SUM(input_panels) = 1 - 良率
+    includes_rework: false
+    scope: 只统计主记录（is_rework_pass = 0）；返工重过站记录不进入分母，避免重复计算不良。
+    source: metrics.md + IC载板制造全流程.docx（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 直通率
+    aliases: [直通率, RTY, 滚动直通率, Rolled Throughput Yield]
+    definition: 同一批次流经全部 17 道工序（P01~P17）的主记录 FPY 逐站连乘；只统计已完工批次。
+    formula: 逐批 rty = ∏(good_panels / input_panels)；SQLite 无连乘聚合，固定用 MAX(CASE) 透视后相乘；全厂/产品口径先逐批算再 AVG/中位数。
+    includes_rework: false
+    scope: >-
+      强制条件：p.is_rework_pass = 0；p.input_panels > 0；
+      JOIN fact_work_order w ON w.lot_id = p.lot_id AND w.lot_status = '已完工'；
+      p.process_id IN ('P01'..'P17') 且 HAVING COUNT(DISTINCT p.process_id) = 17。
+      时间口径：问某月 RTY 时按该批 P17 主记录 out_time 所在月归属批次，
+      不要按每道工序 out_time 分别过滤（会截断连乘）。
+      空值：在制批 out_time 可能为 NULL 但 input/good 已预填，不能靠 NULL/缺站判断，必须整批排除在制。
+      分组：先按 lot_id 算 RTY，再按 product_type / line 汇总。
+      部门：department 是逐条过站记录的操作员归属，同一工序可由不同部门操作，RTY 不能按部门拆分；
+      问“部门 RTY”应改答部门 FPY（SUM(good_panels)*1.0/SUM(input_panels)）并注明不是全流程 RTY。
+    source: metrics.md + IC载板制造全流程.docx（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 一次通过率
+    aliases: [一次通过率, FPY, First Pass Yield]
+    definition: 单道工序（或指定工序集合）一次投入即合格的排板占比。
+    formula: FPY = (input_panels - scrap_panels - rework_panels) / input_panels = good_panels / input_panels
+    includes_rework: false
+    scope: >-
+      只取主记录 is_rework_pass = 0 且 input_panels > 0；工序级按 process_id 分组，
+      先 SUM(good_panels)/SUM(input_panels) 再相除，不能对逐批 FPY 简单平均。
+      时间口径用 out_time；关键工序筛选才用 is_key_process=1。
+      部门：直接 GROUP BY fact_process_record.department，不再 JOIN dim_employee。
+    source: metrics.md + IC载板制造全流程.docx（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 返修率
+    aliases: [返修率, 返工占比, 返工率, Rework Rate]
+    definition: 一次产出中需要返修的排板数量占投入数量的比例。
+    formula: SUM(rework_panels) * 1.0 / SUM(input_panels)；查询同时输出 SUM(rework_panels)、SUM(input_panels) 与比率三列
+    includes_rework: false
+    scope: >-
+      主记录 is_rework_pass = 0 且 input_panels > 0；is_rework_pass = 1 的记录只用于统计返工规模/次数。
+      时间口径：按 date(out_time) 落在目标区间，不 JOIN fact_work_order 过滤 lot_status；
+      月度返工占比是“当期已出站记录的返工活动量”，在制批已出站工序也计入
+      （实测 9 月 512/156,141 = 0.33%；加已完工过滤会错成 255/84,602）。
+      全期累计不加任何 out_time 条件（全期实测 2,677/833,444；加 out_time IS NOT NULL 会错成 2,630/805,892）。
+    source: metrics.md + IC载板制造全流程.docx（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 报废率
+    aliases: [报废率, Scrap Rate]
+    definition: 一次产出中报废排板数量占投入数量的比例。
+    formula: SUM(scrap_panels) * 1.0 / SUM(input_panels)
+    includes_rework: false
+    scope: >-
+      只统计主记录 is_rework_pass = 0 且 input_panels > 0；
+      时间口径用 out_time 落在目标区间，不 JOIN fact_work_order 过滤 lot_status
+      （月度报废率是已出站记录的报废活动量，在制批已出站工序也计入；实测 9 月 0.84%、8 月 0.82%）。
+    source: metrics.md + IC载板制造全流程.docx（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 准时交付率
+    aliases: [准时交付率, OTD, On-Time Delivery]
+    definition: 在订单交期当天或之前出货的出货记录占比；交期取订单行 due_date，多行订单按 MIN(due_date)。
+    formula: SUM(CASE WHEN date(s.ship_date) <= date(d.due_date) THEN 1 ELSE 0 END) * 1.0 / COUNT(*)
+    includes_rework: false
+    scope: >-
+      主表 fact_shipment s（无 scheduled_date），JOIN 订单级 d(order_id, MIN(due_date))；
+      时间口径用 s.ship_date：本月 = ship_date >= 月初 AND ship_date <= 基线日；
+      不要用 due_date 过滤（那是“应交付”，不是“实际交付”）。
+      状态：s.status = '已出货'；不按 order_type 过滤（当前含 88 条 forecast 出货，
+      若只算正式单需在问题中明确并注明口径变化）。
+      空值：ship_date IS NOT NULL、d.due_date IS NOT NULL；无订单行的出货在 INNER JOIN 后排除。
+      粒度：一条出货记录计一次，不按订单去重（当前每单最多 1 条出货）。
+      部门：fact_shipment 无部门字段，不能按部门拆；dim_customer.sales_contact 与 dim_employee
+      值域不对应，禁止反推。按客户/区域统计。
+    source: metrics.md（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 电测通过率
+    aliases: [电测, 电测通过率, 电测良率, 电性测试, 飞针, P15, ETEST]
+    definition: 电测工序 P15 的合格排板数占测试排板数比例；fact_etest 每批一行。
+    formula: SUM(pass_panels) * 1.0 / SUM(tested_panels)
+    includes_rework: false
+    scope: >-
+      只查 fact_etest，分子 SUM(pass_panels)、分母 SUM(tested_panels)；
+      时间口径用 test_time（不是生产 out_time）；本月 = date(test_time) 在月初 ~ 锚点之间。
+      空值：tested_panels > 0；实测 pass_panels 无 NULL 且不超过 tested_panels。
+      返修：fact_etest 每批仅 1 行（1,582 批，均已完成），不要 JOIN fact_process_record
+      的 is_rework_pass=1 记录，否则会放大分母。
+      不良/DPPM：必须用 tested_panels - pass_panels；open_fail+short_fail+isolation_fail
+      与总不良不守恒（实测仅 376/1,582 行相等），分项列只作“开路/短路/绝缘”展示，不得相加当总不良。
+      分组：按 test_time 月份、equipment_id、lot_id → fact_work_order.product_id。
+      部门：fact_etest 无部门字段；如需按部门，JOIN fact_process_record
+      ON lot_id = e.lot_id AND process_id='P15' AND is_rework_pass=0 取 department（每批唯一），
+      并注明这是电测过站操作员部门，不是品质部专属；跨部门人员按主部门计入，不做二次分摊。
+    source: data/db/ic_substrate.db 实测（1,582 批）+ metrics.md（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 应收账龄
+    aliases: [应收, 应收账款, 账龄, 逾期, 逾期金额, 未收, 回款, 账期, 欠款, AR]
+    definition: 未结清应收账款按到期日相对快照日的双向分桶；余额 = amount - received_amount。
+    formula: >-
+      余额 = amount - COALESCE(received_amount, 0)；
+      逾期天数 = julianday(SNAPSHOT_DATE) - julianday(due_date)（due_date < 快照日）；
+      未到期天数 = julianday(due_date) - julianday(SNAPSHOT_DATE)（due_date >= 快照日）。
+    includes_rework: false
+    scope: >-
+      强制过滤 status IN ('部分','未收')，已结清不计入；due_date IS NOT NULL；余额 > 0。
+      边界：due_date = 快照日算未到期（>=）；逾期分桶 1-30 / 31-60 / 61-90 / >90；
+      未到期分桶 0-7 / 8-30 / 31-60 / >60。
+      时间：只用 due_date 与 SNAPSHOT_DATE；receive_date 有 101 行晚于 9-24，禁止参与账龄。
+      快照：SNAPSHOT_DATE 由 config 注入，默认跟随动态锚点；9-24 快照下逾期 = 0 是正确结果。
+      分组：按 dim_customer.customer_id 聚合展示规范名，禁止按 customer_name_raw。
+      部门：fact_receivable 无部门/销售归属字段，不能按部门拆；
+      dim_customer.sales_contact 与 dim_employee 值域不对应，禁止反推。
+    source: data/db/ic_substrate.db 实测（99 笔未结清 / 738,598.07 元）+ metrics.md（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 班次与产线口径
+    aliases: [班次, 产线, 按班次, 按产线, shift, line]
+    definition: 班次以记录自带的 shift_id 为准（S1/S2）；产线以工单的 line_id 为准（L1/L2/L3），通过 lot_id 关联。
+    formula: 班次：GROUP BY fact_process_record.shift_id；产线：fact_process_record JOIN fact_work_order ON lot_id 后 GROUP BY line_id。
+    includes_rework: false
+    scope: 禁止用时间、班次名称或 operator_id 反推班次；禁止用 equipment_id 反推产线。产线良率按 line 汇总 input/good 后计算，产线 RTY 先按批次算再按产线取中位数/均值。
+    source: metrics.md + data/db/ic_substrate.db 实测值域（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）
+
+  - name: 部门口径
+    aliases: [部门, 事业部, 按部门, 各部门, 各事业部, 部门归属, 跨部门]
+    definition: >-
+      过站记录的部门取记录操作员在员工主数据中的部门（制造/品质/设备/生管/业务），
+      是记录时点快照；按部门统计产量/FPY/不良/工时时直接用 fact_process_record.department 分组，
+      无需再 JOIN dim_employee。
+    formula: >-
+      department = operator_id 对应的 dim_employee.department（已回填）；
+      部门产量 = SUM(good_panels)；部门 FPY = SUM(good_panels)*1.0/SUM(input_panels)；
+      部门不良率 = (SUM(scrap_panels)+SUM(rework_panels))*1.0/SUM(input_panels)；
+      部门工时 = SUM((julianday(out_time)-julianday(in_time))*24)，只算 out_time 非空记录；
+      部门人均工时 = 部门工时合计 / 该部门去重 operator_id 数。
+    includes_rework: false
+    scope: >-
+      归属以操作员主部门为唯一依据，不按设备/产线/班次/工序名称反推；跨部门支援人员计入其主部门，
+      不做二次分摊；同一批次跨工序流经多个部门时各段分别统计，部门产量是过站产出量，
+      不可相加当全厂唯一排板产量；现有 31,991 条记录 department 覆盖率 100%、无 NULL，
+      若 operator_id 缺失则记“未归属”并单列；问“事业部”统一按现有部门维度回答，不臆造层级。
+      取值必须等值精确匹配：数据库中只有 制造 / 品质 / 设备 / 生管 / 业务 五个值，
+      不存在“制造部”“品质部”等带“部”后缀的写法，过滤条件必须用上述原值。
+      适用边界：只适用于记录级指标（产量/FPY/不良率/报废率/返修率/工时）；
+      RTY（批次级连乘）、OTD（出货无部门）、应收账龄（应收无部门）、客诉（无部门）不可按部门拆，
+      只能按客户/产品/产线/时间等其他维度回答并说明数据不含部门归属。
+      部门工时口径（本字典为准，补充 metrics.md 未细化部分）：只统计主记录 is_rework_pass = 0
+      且 in_time / out_time 均非空的记录，返工重过站记录不重复计工时；时间按 date(out_time) 归月。
+      部门人均工时的分母是该部门当期有主记录的去重 operator_id 数，不是记录条数、不是批次数。
+      电测按部门：fact_etest 无部门字段，需 lot_id → fact_process_record(P15, is_rework_pass=0).department，
+      每批唯一。
+      同一工序可跨部门：实测 P01~P17 每道工序都有 5 个部门的操作记录，禁止把工序固定映射为部门。
+    source: data/db/ic_substrate.db 实测（31,991 条过站 operator_id 100% 可解析）+ 工艺数据口径评审（人工确认）
+    confirmed_by: 工艺数据口径评审（人工确认）

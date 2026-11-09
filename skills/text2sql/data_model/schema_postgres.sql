@@ -174,7 +174,8 @@ CREATE TABLE fact_process_record (
   scrap_panels  INT,
   rework_panels INT,
   is_rework_pass SMALLINT DEFAULT 0,       -- 1=返工重过站(口径陷阱)
-  remark        VARCHAR(30)
+  remark        VARCHAR(30),
+  department    VARCHAR(20)                -- 过站操作员所属部门(记录时点快照;由operator_id→dim_employee.department回填)
 );
 
 CREATE TABLE fact_defect (

@@ -1,0 +1,731 @@
+# Text2SQL 评测集（51 条 = 47 可执行/可判定 + 4 边界）
+# 指标：
+#   - 执行成功率：守卫通过且 SQL 在只读库执行成功 / 全部题
+#   - 结果集一致率：模型结果与 gold_sql 结果集逐行比对（不比对 SQL 字符串）
+#       exact    ：行数一致，且基准行全部取值都能在模型对应行中找到（允许多展示列）
+#       first_row：只比第一行（用于“第一名 / 最差 / Top1”类问法）
+#   - 澄清命中：expect=clarify 的题必须发起澄清；expect=refuse 的题必须拒绝
+#   - 口径改写：expect=clarify_or_answer 的题，澄清 或 按替代维度答对（result_match）均算命中
+#   - 口径注明：note_points 非空时，回答的口径说明必须命中其中任一说法（规则判定，不做模型打分）
+# 口径题归类：
+#   - E39–E46 为 8 道部门口径应答题；B03/B04 为“无部门字段”澄清/改口径边界题；
+#   - B05（部门 RTY）因有唯一正确结果集（部门 FPY），计入 47 道应答题，
+#     其“非 17 站连乘”的说明要求单独用 note_points 判定。
+# 说明：
+#   - gold_sql 已在 data/db/ic_substrate.db 只读实测，与既有 expected_points 一致
+#   - expected_points 沿用阶段 E 题库的“规则判定要点”，用于结果内容核对
+#   - expected_tables 用于 schema linking 命中率参考（不参与主指标）
+meta:
+  anchor_date: "2026-09-24"
+  snapshot_date: "2026-09-24"
+
+cases:
+  - id: E01
+    module: 工单/在制
+    question: 当前在制工单有多少批？
+    expected_tables: [fact_work_order]
+    expected_points: ["218"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS wip_lots FROM fact_work_order WHERE lot_status='在制'
+  - id: E02
+    module: 工单/完工
+    question: 已经完工的批次一共有多少批？
+    expected_tables: [fact_work_order]
+    expected_points: ["1582"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS done_lots FROM fact_work_order WHERE lot_status='已完工'
+  - id: E03
+    module: 销售/客户
+    question: 各客户正式订单销售额排名，第一名是谁、金额多少？
+    expected_tables: [fact_sales_order, fact_sales_order_item, dim_customer]
+    expected_points: ["韦尔股份豪威", "516411"]
+    result_mode: first_row
+    expect: answer
+    gold_sql: |
+      SELECT c.customer_name, ROUND(SUM(i.order_qty*i.unit_price),2) AS amount
+      FROM fact_sales_order o
+      JOIN fact_sales_order_item i ON i.order_id=o.order_id
+      JOIN dim_customer c ON c.customer_id=o.customer_id
+      WHERE o.order_type='正式单'
+      GROUP BY c.customer_id,c.customer_name
+      ORDER BY amount DESC LIMIT 1
+  - id: E04
+    module: 销售/客户
+    question: 韦尔股份豪威今年下了多少张正式订单，总金额多少？
+    expected_tables: [fact_sales_order, fact_sales_order_item, dim_customer]
+    expected_points: ["38", "516411"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(DISTINCT o.order_id) AS order_cnt, ROUND(SUM(i.order_qty*i.unit_price),2) AS amount
+      FROM fact_sales_order o
+      JOIN fact_sales_order_item i ON i.order_id=o.order_id
+      JOIN dim_customer c ON c.customer_id=o.customer_id
+      WHERE o.order_type='正式单' AND o.order_date >= '2026-01-01' AND c.customer_name='韦尔股份豪威'
+  - id: E05
+    module: 销售/产品
+    question: 各产品类型的正式订单销售额分别是多少？
+    expected_tables: [fact_sales_order, fact_sales_order_item, dim_product]
+    expected_points: ["FCBGA", "2538507.6", "FCCSP", "865915.2", "WBCSP", "353137.2", "RF", "184507.2"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT pr.product_type, ROUND(SUM(i.order_qty*i.unit_price),2) AS amount
+      FROM fact_sales_order o
+      JOIN fact_sales_order_item i ON i.order_id=o.order_id
+      JOIN dim_product pr ON pr.product_id=i.product_id
+      WHERE o.order_type='正式单'
+      GROUP BY pr.product_type ORDER BY amount DESC
+  - id: E06
+    module: 质量/RTY
+    question: 工单260600002的整体RTY是多少？
+    expected_tables: [fact_process_record, fact_work_order]
+    expected_points: ["0.707或0.7070"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      WITH f AS (
+        SELECT process_id, good_panels*1.0/input_panels AS f
+        FROM fact_process_record WHERE lot_id='260600002' AND is_rework_pass=0
+      )
+      SELECT MAX(CASE WHEN process_id='P01' THEN f END)*MAX(CASE WHEN process_id='P02' THEN f END)
+           * MAX(CASE WHEN process_id='P03' THEN f END)*MAX(CASE WHEN process_id='P04' THEN f END)
+           * MAX(CASE WHEN process_id='P05' THEN f END)*MAX(CASE WHEN process_id='P06' THEN f END)
+           * MAX(CASE WHEN process_id='P07' THEN f END)*MAX(CASE WHEN process_id='P08' THEN f END)
+           * MAX(CASE WHEN process_id='P09' THEN f END)*MAX(CASE WHEN process_id='P10' THEN f END)
+           * MAX(CASE WHEN process_id='P11' THEN f END)*MAX(CASE WHEN process_id='P12' THEN f END)
+           * MAX(CASE WHEN process_id='P13' THEN f END)*MAX(CASE WHEN process_id='P14' THEN f END)
+           * MAX(CASE WHEN process_id='P15' THEN f END)*MAX(CASE WHEN process_id='P16' THEN f END)
+           * MAX(CASE WHEN process_id='P17' THEN f END) AS rty
+      FROM f HAVING COUNT(DISTINCT process_id)=17
+  - id: E07
+    module: 质量/RTY
+    question: 全部已完工批次的整体RTY平均值和中位数是多少？
+    expected_tables: [fact_process_record, fact_work_order]
+    expected_points: ["0.8179", "0.8237"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      WITH fpy AS (
+        SELECT p.lot_id, p.process_id, p.good_panels*1.0/p.input_panels AS f
+        FROM fact_process_record p JOIN fact_work_order w ON w.lot_id=p.lot_id
+        WHERE w.lot_status='已完工' AND p.is_rework_pass=0
+      ), lot_rty AS (
+        SELECT lot_id,
+               MAX(CASE WHEN process_id='P01' THEN f END)*MAX(CASE WHEN process_id='P02' THEN f END)
+             * MAX(CASE WHEN process_id='P03' THEN f END)*MAX(CASE WHEN process_id='P04' THEN f END)
+             * MAX(CASE WHEN process_id='P05' THEN f END)*MAX(CASE WHEN process_id='P06' THEN f END)
+             * MAX(CASE WHEN process_id='P07' THEN f END)*MAX(CASE WHEN process_id='P08' THEN f END)
+             * MAX(CASE WHEN process_id='P09' THEN f END)*MAX(CASE WHEN process_id='P10' THEN f END)
+             * MAX(CASE WHEN process_id='P11' THEN f END)*MAX(CASE WHEN process_id='P12' THEN f END)
+             * MAX(CASE WHEN process_id='P13' THEN f END)*MAX(CASE WHEN process_id='P14' THEN f END)
+             * MAX(CASE WHEN process_id='P15' THEN f END)*MAX(CASE WHEN process_id='P16' THEN f END)
+             * MAX(CASE WHEN process_id='P17' THEN f END) AS rty
+        FROM fpy GROUP BY lot_id HAVING COUNT(DISTINCT process_id)=17
+      ), ordered AS (
+        SELECT rty, ROW_NUMBER() OVER (ORDER BY rty) rn, COUNT(*) OVER () n FROM lot_rty
+      ), mid AS (SELECT rty FROM ordered WHERE rn IN ((n+1)/2,(n+2)/2))
+      SELECT ROUND(AVG(rty),4) AS avg_rty, ROUND((SELECT AVG(rty) FROM mid),4) AS median_rty FROM lot_rty
+  - id: E08
+    module: 质量/RTY
+    question: FCBGA和FCCSP两类产品的RTY分别是多少？
+    expected_tables: [fact_process_record, fact_work_order, dim_product]
+    expected_points: ["FCBGA", "0.8025", "FCCSP", "0.8305"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      WITH fpy AS (
+        SELECT p.lot_id, p.process_id, p.good_panels*1.0/p.input_panels AS f
+        FROM fact_process_record p JOIN fact_work_order w ON w.lot_id=p.lot_id
+        WHERE w.lot_status='已完工' AND p.is_rework_pass=0
+      ), lot_rty AS (
+        SELECT lot_id,
+               MAX(CASE WHEN process_id='P01' THEN f END)*MAX(CASE WHEN process_id='P02' THEN f END)
+             * MAX(CASE WHEN process_id='P03' THEN f END)*MAX(CASE WHEN process_id='P04' THEN f END)
+             * MAX(CASE WHEN process_id='P05' THEN f END)*MAX(CASE WHEN process_id='P06' THEN f END)
+             * MAX(CASE WHEN process_id='P07' THEN f END)*MAX(CASE WHEN process_id='P08' THEN f END)
+             * MAX(CASE WHEN process_id='P09' THEN f END)*MAX(CASE WHEN process_id='P10' THEN f END)
+             * MAX(CASE WHEN process_id='P11' THEN f END)*MAX(CASE WHEN process_id='P12' THEN f END)
+             * MAX(CASE WHEN process_id='P13' THEN f END)*MAX(CASE WHEN process_id='P14' THEN f END)
+             * MAX(CASE WHEN process_id='P15' THEN f END)*MAX(CASE WHEN process_id='P16' THEN f END)
+             * MAX(CASE WHEN process_id='P17' THEN f END) AS rty
+        FROM fpy GROUP BY lot_id HAVING COUNT(DISTINCT process_id)=17
+      )
+      SELECT pr.product_type, ROUND(AVG(r.rty),4) AS avg_rty
+      FROM lot_rty r JOIN fact_work_order w ON w.lot_id=r.lot_id
+      JOIN dim_product pr ON pr.product_id=w.product_id
+      WHERE pr.product_type IN ('FCBGA','FCCSP')
+      GROUP BY pr.product_type ORDER BY avg_rty DESC
+  - id: E09
+    module: 质量/FPY
+    question: 所有工序里一次通过率FPY最差的是哪道工序？是多少？
+    expected_tables: [fact_process_record, fact_work_order, dim_process]
+    expected_points: ["P09", "0.976"]
+    result_mode: first_row
+    expect: answer
+    gold_sql: |
+      SELECT p.process_id, pr.process_name, ROUND(SUM(p.good_panels)*1.0/SUM(p.input_panels),4) AS fpy
+      FROM fact_process_record p JOIN fact_work_order w ON w.lot_id=p.lot_id
+      JOIN dim_process pr ON pr.process_id=p.process_id
+      WHERE w.lot_status='已完工' AND p.is_rework_pass=0
+      GROUP BY p.process_id,pr.process_name ORDER BY fpy ASC LIMIT 1
+  - id: E10
+    module: 质量/报废
+    question: 本月的报废率是多少？
+    expected_tables: [fact_process_record]
+    expected_points: ["0.0084或0.84"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT ROUND(SUM(scrap_panels)*1.0/SUM(input_panels),4) AS scrap_rate
+      FROM fact_process_record
+      WHERE is_rework_pass=0 AND date(out_time) >= date('2026-09-24','start of month')
+  - id: E11
+    module: 质量/返工
+    question: 全期返工数量占总投入排板数的比例是多少？
+    expected_tables: [fact_process_record]
+    expected_points: ["2677", "833444", "0.0032或0.32"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT SUM(rework_panels) AS rework_panels, SUM(input_panels) AS input_panels,
+             ROUND(SUM(rework_panels)*1.0/SUM(input_panels),4) AS rework_rate
+      FROM fact_process_record WHERE is_rework_pass=0
+  - id: E12
+    module: 交付/OTD
+    question: 本月的准时交付率是多少？
+    expected_tables: [fact_shipment, fact_sales_order_item]
+    expected_points: ["118", "41", "0.3475或34.75"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS ship_cnt,
+             SUM(CASE WHEN s.ship_date<=d.due_date THEN 1 ELSE 0 END) AS on_time_cnt,
+             ROUND(SUM(CASE WHEN s.ship_date<=d.due_date THEN 1 ELSE 0 END)*1.0/COUNT(*),4) AS otd
+      FROM fact_shipment s
+      JOIN (SELECT order_id, MIN(due_date) AS due_date FROM fact_sales_order_item GROUP BY order_id) d
+        ON d.order_id=s.order_id
+      WHERE s.ship_date >= date('2026-09-24','start of month')
+  - id: E13
+    module: 财务/应收
+    question: 未结清应收账款笔数最多的是哪个客户、多少笔？
+    expected_tables: [fact_receivable, dim_customer]
+    expected_points: ["韦尔股份豪威", "14"]
+    result_mode: first_row
+    expect: answer
+    gold_sql: |
+      SELECT c.customer_name, COUNT(*) AS unpaid_cnt
+      FROM fact_receivable r JOIN dim_customer c ON c.customer_id=r.customer_id
+      WHERE r.status IN ('部分','未收')
+      GROUP BY c.customer_id,c.customer_name ORDER BY unpaid_cnt DESC LIMIT 1
+  - id: E14
+    module: 交付/出货
+    question: 最近一周实际出货多少颗，同期计划出货多少颗？
+    expected_tables: [fact_shipment, fact_shipment_item, fact_sales_order_item]
+    expected_points: ["732240", "900000"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT (SELECT COALESCE(SUM(si.ship_qty_units),0)
+              FROM fact_shipment s JOIN fact_shipment_item si ON si.shipment_id=s.shipment_id
+              WHERE s.ship_date BETWEEN date('2026-09-24','-6 day') AND '2026-09-24') AS actual_units,
+             (SELECT COALESCE(SUM(i.order_qty),0)
+              FROM fact_sales_order_item i
+              WHERE i.due_date BETWEEN date('2026-09-24','-6 day') AND '2026-09-24') AS planned_units
+  - id: E15
+    module: 质量/缺陷
+    question: 出现次数最多的缺陷原因是什么、多少次？
+    expected_tables: [fact_defect, dim_defect_code]
+    expected_points: ["孔位偏移", "641"]
+    result_mode: first_row
+    expect: answer
+    gold_sql: |
+      SELECT dc.defect_name, SUM(d.defect_qty) AS defect_qty
+      FROM fact_defect d JOIN dim_defect_code dc ON dc.defect_code=d.defect_code
+      GROUP BY dc.defect_code,dc.defect_name ORDER BY defect_qty DESC LIMIT 1
+  - id: E16
+    module: 质量/电测
+    question: 全期电测通过率是多少？
+    expected_tables: [fact_etest]
+    expected_points: ["41086", "40164", "0.9776或97.76"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT SUM(tested_panels) AS tested_panels, SUM(pass_panels) AS pass_panels,
+             ROUND(SUM(pass_panels)*1.0/SUM(tested_panels),4) AS pass_rate
+      FROM fact_etest
+  - id: E17
+    module: 客诉
+    question: 寒武纪的客诉有多少次，平均DPPM和最高DPPM分别是多少？
+    expected_tables: [fact_customer_complaint, dim_customer]
+    expected_points: ["寒武纪", "2", "148", "149"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT c.customer_name, COUNT(*) AS complaint_cnt, ROUND(AVG(x.dppm),1) AS avg_dppm, MAX(x.dppm) AS max_dppm
+      FROM fact_customer_complaint x JOIN dim_customer c ON c.customer_id=x.customer_id
+      WHERE c.customer_name='寒武纪'
+      GROUP BY c.customer_id,c.customer_name
+  - id: E18
+    module: 设备/停机
+    question: 停机总时长最长的是哪台设备、累计多少分钟？
+    expected_tables: [fact_equipment_downtime, dim_equipment]
+    expected_points: ["Q0202", "1200"]
+    result_mode: first_row
+    expect: answer
+    gold_sql: |
+      SELECT e.equipment_id, SUM(dt.duration_min) AS total_down_min
+      FROM fact_equipment_downtime dt JOIN dim_equipment e ON e.equipment_id=dt.equipment_id
+      GROUP BY e.equipment_id,e.equipment_name ORDER BY total_down_min DESC LIMIT 1
+  - id: E19
+    module: 库存
+    question: 芯板CORE（物料M001）的库存数量和库存金额是多少？
+    expected_tables: [fact_inventory, dim_material]
+    expected_points: ["M001或芯板", "479", "354119.91"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT m.material_name, SUM(i.qty_on_hand) AS qty_on_hand,
+             ROUND(SUM(i.qty_on_hand*COALESCE(m.standard_cost,0)),2) AS amount
+      FROM fact_inventory i LEFT JOIN dim_material m ON m.material_id=i.material_id
+      WHERE i.material_id='M001' GROUP BY m.material_name
+  - id: E20
+    module: 财务/账龄
+    question: 按2026-09-24快照，未结清应收账款的未到期余额和逾期金额分别是多少？
+    expected_tables: [fact_receivable]
+    expected_points: ["738598.07", "0"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT ROUND(SUM(CASE WHEN due_date >= '2026-09-24' THEN amount-received_amount ELSE 0 END),2) AS not_due,
+             ROUND(SUM(CASE WHEN due_date < '2026-09-24' THEN amount-received_amount ELSE 0 END),2) AS overdue
+      FROM fact_receivable WHERE status IN ('部分','未收')
+  - id: E21
+    module: 工单/产线
+    question: 工单数量最多的是哪条产线、多少批？
+    expected_tables: [fact_work_order, dim_line]
+    expected_points: ["FCBGA专线", "948"]
+    result_mode: first_row
+    expect: answer
+    gold_sql: |
+      SELECT l.line_name, COUNT(*) AS lot_cnt
+      FROM fact_work_order w JOIN dim_line l ON l.line_id=w.line_id
+      GROUP BY l.line_id,l.line_name ORDER BY lot_cnt DESC LIMIT 1
+  - id: E22
+    module: 工单
+    question: 6月份一共发放了多少批工单？
+    expected_tables: [fact_work_order]
+    expected_points: ["463"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS release_lots FROM fact_work_order
+      WHERE release_date >= '2026-06-01' AND release_date < '2026-07-01'
+  - id: E23
+    module: 订单
+    question: 预测单forecast一共有多少张？
+    expected_tables: [fact_sales_order]
+    expected_points: ["131"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS forecast_cnt FROM fact_sales_order WHERE order_type='forecast'
+  - id: E24
+    module: 订单
+    question: 正式订单占全部订单的比例是多少？
+    expected_tables: [fact_sales_order]
+    expected_points: ["289", "420", "0.6881或68.81"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT SUM(CASE WHEN order_type='正式单' THEN 1 ELSE 0 END) AS formal_cnt,
+             COUNT(*) AS total_cnt,
+             ROUND(SUM(CASE WHEN order_type='正式单' THEN 1 ELSE 0 END)*1.0/COUNT(*),4) AS formal_ratio
+      FROM fact_sales_order
+  - id: E25
+    module: 销售/区域
+    question: 哪个区域的正式订单销售额最高、金额多少？
+    expected_tables: [fact_sales_order, fact_sales_order_item, dim_customer]
+    expected_points: ["华东", "1773370.8"]
+    result_mode: first_row
+    expect: answer
+    gold_sql: |
+      SELECT c.region, ROUND(SUM(i.order_qty*i.unit_price),2) AS amount
+      FROM fact_sales_order o
+      JOIN fact_sales_order_item i ON i.order_id=o.order_id
+      JOIN dim_customer c ON c.customer_id=o.customer_id
+      WHERE o.order_type='正式单'
+      GROUP BY c.region ORDER BY amount DESC LIMIT 1
+  - id: E26
+    module: 工单/优先级
+    question: 紧急优先级的工单有多少批？
+    expected_tables: [fact_work_order]
+    expected_points: ["645"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS urgent_lots FROM fact_work_order WHERE priority='紧急'
+  - id: E27
+    module: 销售
+    question: 8月份正式订单的销售额是多少？
+    expected_tables: [fact_sales_order, fact_sales_order_item]
+    expected_points: ["958057.8"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT ROUND(SUM(i.order_qty*i.unit_price),2) AS amount
+      FROM fact_sales_order o JOIN fact_sales_order_item i ON i.order_id=o.order_id
+      WHERE o.order_type='正式单' AND o.order_date >= '2026-08-01' AND o.order_date < '2026-09-01'
+  - id: E28
+    module: 质量/返工
+    question: 本月返工排板数占投入的比例是多少？
+    expected_tables: [fact_process_record]
+    expected_points: ["512", "156141", "0.0033或0.33"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT SUM(rework_panels) AS rework_panels, SUM(input_panels) AS input_panels,
+             ROUND(SUM(rework_panels)*1.0/SUM(input_panels),4) AS rework_rate
+      FROM fact_process_record
+      WHERE is_rework_pass=0 AND date(out_time) >= date('2026-09-24','start of month')
+  - id: E29
+    module: 质量/FPY
+    question: P01这道工序的一次通过率是多少？
+    expected_tables: [fact_process_record, fact_work_order, dim_process]
+    expected_points: ["P01", "0.9816"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT p.process_id, ROUND(SUM(p.good_panels)*1.0/SUM(p.input_panels),4) AS fpy
+      FROM fact_process_record p JOIN fact_work_order w ON w.lot_id=p.lot_id
+      JOIN dim_process pr ON pr.process_id=p.process_id
+      WHERE w.lot_status='已完工' AND p.is_rework_pass=0 AND p.process_id='P01'
+      GROUP BY p.process_id
+  - id: E30
+    module: 客诉
+    question: 目前还在处理中的客诉有多少起？
+    expected_tables: [fact_customer_complaint]
+    expected_points: ["10"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS processing_cnt FROM fact_customer_complaint WHERE status='处理中'
+  - id: E31
+    module: 质量/RTY
+    question: RF类产品的RTY是多少？
+    expected_tables: [fact_process_record, fact_work_order, dim_product]
+    expected_points: ["RF", "0.8397"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      WITH fpy AS (
+        SELECT p.lot_id, p.process_id, p.good_panels*1.0/p.input_panels AS f
+        FROM fact_process_record p JOIN fact_work_order w ON w.lot_id=p.lot_id
+        WHERE w.lot_status='已完工' AND p.is_rework_pass=0
+      ), lot_rty AS (
+        SELECT lot_id,
+               MAX(CASE WHEN process_id='P01' THEN f END)*MAX(CASE WHEN process_id='P02' THEN f END)
+             * MAX(CASE WHEN process_id='P03' THEN f END)*MAX(CASE WHEN process_id='P04' THEN f END)
+             * MAX(CASE WHEN process_id='P05' THEN f END)*MAX(CASE WHEN process_id='P06' THEN f END)
+             * MAX(CASE WHEN process_id='P07' THEN f END)*MAX(CASE WHEN process_id='P08' THEN f END)
+             * MAX(CASE WHEN process_id='P09' THEN f END)*MAX(CASE WHEN process_id='P10' THEN f END)
+             * MAX(CASE WHEN process_id='P11' THEN f END)*MAX(CASE WHEN process_id='P12' THEN f END)
+             * MAX(CASE WHEN process_id='P13' THEN f END)*MAX(CASE WHEN process_id='P14' THEN f END)
+             * MAX(CASE WHEN process_id='P15' THEN f END)*MAX(CASE WHEN process_id='P16' THEN f END)
+             * MAX(CASE WHEN process_id='P17' THEN f END) AS rty
+        FROM fpy GROUP BY lot_id HAVING COUNT(DISTINCT process_id)=17
+      )
+      SELECT pr.product_type, ROUND(AVG(r.rty),4) AS avg_rty
+      FROM lot_rty r JOIN fact_work_order w ON w.lot_id=r.lot_id
+      JOIN dim_product pr ON pr.product_id=w.product_id
+      WHERE pr.product_type='RF' GROUP BY pr.product_type
+  - id: E32
+    module: 质量/RTY
+    question: RTY平均水平最高的是哪类产品、多少？
+    expected_tables: [fact_process_record, fact_work_order, dim_product]
+    expected_points: ["WBCSP", "0.8401"]
+    result_mode: first_row
+    expect: answer
+    gold_sql: |
+      WITH fpy AS (
+        SELECT p.lot_id, p.process_id, p.good_panels*1.0/p.input_panels AS f
+        FROM fact_process_record p JOIN fact_work_order w ON w.lot_id=p.lot_id
+        WHERE w.lot_status='已完工' AND p.is_rework_pass=0
+      ), lot_rty AS (
+        SELECT lot_id,
+               MAX(CASE WHEN process_id='P01' THEN f END)*MAX(CASE WHEN process_id='P02' THEN f END)
+             * MAX(CASE WHEN process_id='P03' THEN f END)*MAX(CASE WHEN process_id='P04' THEN f END)
+             * MAX(CASE WHEN process_id='P05' THEN f END)*MAX(CASE WHEN process_id='P06' THEN f END)
+             * MAX(CASE WHEN process_id='P07' THEN f END)*MAX(CASE WHEN process_id='P08' THEN f END)
+             * MAX(CASE WHEN process_id='P09' THEN f END)*MAX(CASE WHEN process_id='P10' THEN f END)
+             * MAX(CASE WHEN process_id='P11' THEN f END)*MAX(CASE WHEN process_id='P12' THEN f END)
+             * MAX(CASE WHEN process_id='P13' THEN f END)*MAX(CASE WHEN process_id='P14' THEN f END)
+             * MAX(CASE WHEN process_id='P15' THEN f END)*MAX(CASE WHEN process_id='P16' THEN f END)
+             * MAX(CASE WHEN process_id='P17' THEN f END) AS rty
+        FROM fpy GROUP BY lot_id HAVING COUNT(DISTINCT process_id)=17
+      )
+      SELECT pr.product_type, ROUND(AVG(r.rty),4) AS avg_rty
+      FROM lot_rty r JOIN fact_work_order w ON w.lot_id=r.lot_id
+      JOIN dim_product pr ON pr.product_id=w.product_id
+      GROUP BY pr.product_type ORDER BY avg_rty DESC LIMIT 1
+  - id: E33
+    module: 质量/电测
+    question: 本月电测通过率是多少？
+    expected_tables: [fact_etest]
+    expected_points: ["5031", "4907", "0.9754或97.54"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT SUM(tested_panels) AS tested_panels, SUM(pass_panels) AS pass_panels,
+             ROUND(SUM(pass_panels)*1.0/SUM(tested_panels),4) AS pass_rate
+      FROM fact_etest WHERE date(test_time) >= date('2026-09-24','start of month')
+  - id: E34
+    module: 质量/缺陷
+    question: 孔类缺陷一共有多少个？
+    expected_tables: [fact_defect, dim_defect_code]
+    expected_points: ["1417"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT SUM(d.defect_qty) AS defect_qty
+      FROM fact_defect d JOIN dim_defect_code dc ON dc.defect_code=d.defect_code
+      WHERE dc.defect_category='孔'
+  - id: E35
+    module: 质量/报废
+    question: 8月份的报废率是多少？
+    expected_tables: [fact_process_record]
+    expected_points: ["0.0082或0.82"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT ROUND(SUM(scrap_panels)*1.0/SUM(input_panels),4) AS scrap_rate
+      FROM fact_process_record
+      WHERE is_rework_pass=0 AND date(out_time) >= '2026-08-01' AND date(out_time) < '2026-09-01'
+  - id: E36
+    module: 质量/返工
+    question: 返工后重过站的记录一共有多少条？
+    expected_tables: [fact_process_record]
+    expected_points: ["1391"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS rework_pass_rows FROM fact_process_record WHERE is_rework_pass=1
+  - id: E37
+    module: 交付/OTD
+    question: 全期的准时交付率是多少？
+    expected_tables: [fact_shipment, fact_sales_order_item]
+    expected_points: ["165", "301", "0.5482或54.82"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS ship_cnt,
+             SUM(CASE WHEN s.ship_date<=d.due_date THEN 1 ELSE 0 END) AS on_time_cnt,
+             ROUND(SUM(CASE WHEN s.ship_date<=d.due_date THEN 1 ELSE 0 END)*1.0/COUNT(*),4) AS otd
+      FROM fact_shipment s
+      JOIN (SELECT order_id, MIN(due_date) AS due_date FROM fact_sales_order_item GROUP BY order_id) d
+        ON d.order_id=s.order_id
+  - id: E38
+    module: 交付/出货
+    question: 7月份一共出货了多少批？
+    expected_tables: [fact_shipment]
+    expected_points: ["28"]
+    result_mode: exact
+    expect: answer
+    gold_sql: |
+      SELECT COUNT(*) AS ship_cnt FROM fact_shipment
+      WHERE ship_date >= '2026-07-01' AND ship_date < '2026-08-01'
+
+  # ---------- 部门口径：可执行题（gold 均为只读实测结果） ----------
+  - id: E39
+    module: 质量/部门
+    question: 各部门本月产量排名，按合格排板数从高到低。
+    expected_tables: [fact_process_record]
+    expected_points: ["制造", "42480", "生管", "39093", "设备", "30311", "业务", "23063", "品质", "19373"]
+    result_mode: exact
+    expect: answer
+    judge: 按 fact_process_record.department 直接分组，产量=主记录 SUM(good_panels)，按 out_time 归本月
+    gold_sql: |
+      SELECT department, SUM(good_panels) AS good_panels
+      FROM fact_process_record
+      WHERE is_rework_pass=0 AND date(out_time) >= date('2026-09-24','start of month')
+      GROUP BY department ORDER BY good_panels DESC
+
+  - id: E40
+    module: 质量/部门
+    question: 各部门本月的一次通过率 FPY 分别是多少？
+    expected_tables: [fact_process_record, fact_work_order]
+    expected_points: ["生管", "0.9895", "设备", "0.9886", "业务", "0.9884", "品质", "0.988", "制造", "0.988"]
+    result_mode: exact
+    expect: answer
+    judge: 与 FS23 一致：已完工批次 + 主记录，先 SUM(good)/SUM(input) 再按部门取 4 位
+    gold_sql: |
+      SELECT p.department, ROUND(SUM(p.good_panels)*1.0/SUM(p.input_panels),4) AS fpy
+      FROM fact_process_record p JOIN fact_work_order w ON w.lot_id=p.lot_id
+      WHERE w.lot_status='已完工' AND p.is_rework_pass=0 AND p.input_panels>0
+        AND date(p.out_time) >= date('2026-09-24','start of month')
+      GROUP BY p.department ORDER BY fpy DESC
+
+  - id: E41
+    module: 质量/部门
+    question: 品质部本月的返修率和报废率分别是多少？
+    expected_tables: [fact_process_record]
+    expected_points: ["61", "164", "19598", "0.0031", "0.0084"]
+    result_mode: exact
+    expect: answer
+    judge: 部门过滤 department='品质'；返修/报废按主记录、out_time 归月，不 JOIN 已完工
+    gold_sql: |
+      SELECT SUM(rework_panels) AS rework_panels, SUM(scrap_panels) AS scrap_panels,
+             SUM(input_panels) AS input_panels,
+             ROUND(SUM(rework_panels)*1.0/SUM(input_panels),4) AS rework_rate,
+             ROUND(SUM(scrap_panels)*1.0/SUM(input_panels),4) AS scrap_rate
+      FROM fact_process_record
+      WHERE is_rework_pass=0 AND department='品质'
+        AND date(out_time) >= date('2026-09-24','start of month')
+
+  - id: E42
+    module: 质量/部门
+    question: 各部门本月电测通过率分别是多少？
+    expected_tables: [fact_etest, fact_process_record]
+    expected_points: ["生管", "0.9808", "设备", "0.9801", "制造", "0.9738", "品质", "0.9721", "业务", "0.9695"]
+    result_mode: exact
+    expect: answer
+    judge: fact_etest lot_id → P15 主过站记录取 department，pass/tested 先 SUM 再相除，时间用 test_time
+    gold_sql: |
+      SELECT p.department, SUM(e.tested_panels) AS tested_panels, SUM(e.pass_panels) AS pass_panels,
+             ROUND(SUM(e.pass_panels)*1.0/SUM(e.tested_panels),4) AS pass_rate
+      FROM fact_etest e
+      JOIN fact_process_record p ON p.lot_id=e.lot_id AND p.process_id='P15' AND p.is_rework_pass=0
+      WHERE date(e.test_time) >= date('2026-09-24','start of month')
+      GROUP BY p.department ORDER BY pass_rate DESC
+
+  - id: E43
+    module: 质量/部门
+    question: 9月份各部门的工时合计分别是多少？
+    expected_tables: [fact_process_record]
+    expected_points: ["制造", "3103.88", "生管", "2914.4", "设备", "2167.63", "业务", "1680.67", "品质", "1395.05"]
+    result_mode: exact
+    expect: answer
+    judge: 部门工时=主记录 in_time/out_time 非空的出站时长，按 date(out_time) 归 9 月（字典部门口径）
+    gold_sql: |
+      SELECT department, ROUND(SUM((julianday(out_time)-julianday(in_time))*24),2) AS hours
+      FROM fact_process_record
+      WHERE is_rework_pass=0 AND in_time IS NOT NULL AND out_time IS NOT NULL
+        AND date(out_time) >= date('2026-09-24','start of month')
+      GROUP BY department ORDER BY hours DESC
+
+  - id: E44
+    module: 质量/部门
+    question: 制造部 P09 工序本月的返工率是多少？
+    expected_tables: [fact_process_record]
+    expected_points: ["13", "2870", "0.0045"]
+    result_mode: exact
+    expect: answer
+    judge: department='制造' + process_id='P09' 主记录，返工率=SUM(rework)/SUM(input)，不按完工过滤
+    gold_sql: |
+      SELECT SUM(rework_panels) AS rework_panels, SUM(input_panels) AS input_panels,
+             ROUND(SUM(rework_panels)*1.0/SUM(input_panels),4) AS rework_rate
+      FROM fact_process_record
+      WHERE is_rework_pass=0 AND department='制造' AND process_id='P09'
+        AND date(out_time) >= date('2026-09-24','start of month')
+
+  - id: E45
+    module: 质量/部门
+    question: 9月份各部门的人均工时分别是多少？
+    expected_tables: [fact_process_record]
+    expected_points: ["生管", "291.44", "制造", "282.17", "业务", "280.11", "品质", "279.01", "设备", "270.95"]
+    result_mode: exact
+    expect: answer
+    judge: 人均工时=主记录部门工时合计÷该部门当期去重 operator_id 数（字典部门口径）
+    gold_sql: |
+      SELECT department,
+             ROUND(SUM((julianday(out_time)-julianday(in_time))*24),2) AS total_hours,
+             COUNT(DISTINCT operator_id) AS operators,
+             ROUND(SUM((julianday(out_time)-julianday(in_time))*24)*1.0/COUNT(DISTINCT operator_id),2) AS hours_per_operator
+      FROM fact_process_record
+      WHERE is_rework_pass=0 AND in_time IS NOT NULL AND out_time IS NOT NULL
+        AND date(out_time) >= date('2026-09-24','start of month')
+      GROUP BY department ORDER BY hours_per_operator DESC
+
+  - id: E46
+    module: 质量/部门
+    question: 工单 260600002 的过站记录分别涉及哪些部门，各有多少条记录？
+    expected_tables: [fact_process_record]
+    expected_points: ["制造", "7", "业务", "5", "设备", "4", "品质", "2", "生管", "1"]
+    result_mode: exact
+    expect: answer
+    judge: lot_id 等值关联全部过站记录，按 department 统计记录数，验证同一批次跨部门
+    gold_sql: |
+      SELECT department, COUNT(*) AS records
+      FROM fact_process_record WHERE lot_id='260600002'
+      GROUP BY department ORDER BY records DESC
+
+  # ---------- 边界：澄清 / 拒答 ----------
+  - id: B01
+    module: 边界/澄清
+    question: 把那个表的数据给我看看。
+    expected_tables: []
+    expected_points: []
+    expect: clarify
+  - id: B02
+    module: 边界/只读
+    question: 删除 2026 年 9 月之前的全部工单记录。
+    expected_tables: []
+    expected_points: []
+    expect: refuse
+
+  # ---------- 部门口径：边界/改写题 ----------
+  - id: B03
+    module: 边界/部门
+    question: 各部门本月准时交付率分别是多少？如果出货数据没有部门归属，就按客户给出。
+    expected_tables: [fact_shipment]
+    expected_points: ["瑞芯微", "0.625", "中兴微电子", "0.1111", "韦尔股份豪威", "0.2778"]
+    result_mode: exact
+    expect: clarify_or_answer
+    note_points: ["无部门或没有部门或不含部门或无部门字段"]
+    judge: OTD 无部门字段；澄清 或 按客户给出本月 OTD（result_match）均算命中，回答时须注明无部门
+    gold_sql: |
+      SELECT c.customer_name, COUNT(*) AS ship_cnt,
+             SUM(CASE WHEN s.ship_date<=d.due_date THEN 1 ELSE 0 END) AS on_time_cnt,
+             ROUND(SUM(CASE WHEN s.ship_date<=d.due_date THEN 1 ELSE 0 END)*1.0/COUNT(*),4) AS otd
+      FROM fact_shipment s
+      JOIN (SELECT order_id, MIN(due_date) AS due_date FROM fact_sales_order_item GROUP BY order_id) d
+        ON d.order_id=s.order_id
+      JOIN fact_sales_order o ON o.order_id=s.order_id
+      JOIN dim_customer c ON c.customer_id=o.customer_id
+      WHERE s.ship_date >= date('2026-09-24','start of month')
+      GROUP BY c.customer_id, c.customer_name ORDER BY otd DESC
+
+  - id: B04
+    module: 边界/部门
+    question: 截至 2026-09-24，各部门应收账款的未到期余额分别是多少？如果没有部门归属，就按客户给出。
+    expected_tables: [fact_receivable, dim_customer]
+    expected_points: ["韦尔股份豪威", "96178.9", "兆易创新", "93317.62", "瑞芯微", "16120.31"]
+    result_mode: exact
+    expect: clarify_or_answer
+    note_points: ["无部门或没有部门或不含部门或无部门字段"]
+    judge: 应收无部门字段；澄清 或 按客户给出未到期余额（快照日 2026-09-24）均算命中，回答时须注明无部门
+    gold_sql: |
+      SELECT c.customer_name,
+             ROUND(SUM(CASE WHEN r.due_date >= '2026-09-24' THEN r.amount-COALESCE(r.received_amount,0) ELSE 0 END),2) AS not_due
+      FROM fact_receivable r JOIN dim_customer c ON c.customer_id=r.customer_id
+      WHERE r.status IN ('部分','未收')
+      GROUP BY c.customer_id, c.customer_name ORDER BY not_due DESC
+
+  - id: B05
+    module: 边界/部门
+    question: 各部门的 RTY 分别是多少？
+    expected_tables: [fact_process_record, fact_work_order]
+    expected_points: ["制造", "0.9882", "生管", "0.9883", "业务", "0.9884", "设备", "0.9887", "品质", "0.9888"]
+    result_mode: exact
+    expect: answer
+    note_points: ["FPY或过站良率或不是全流程或非全流程或不是17站或非17站或非 17 站"]
+    judge: RTY 不可按部门拆，按部门 FPY（已完工批次）判定，且口径说明须注明不是 17 站连乘 RTY
+    gold_sql: |
+      SELECT p.department, ROUND(SUM(p.good_panels)*1.0/SUM(p.input_panels),4) AS fpy
+      FROM fact_process_record p JOIN fact_work_order w ON w.lot_id=p.lot_id
+      WHERE w.lot_status='已完工' AND p.is_rework_pass=0 AND p.input_panels>0
+      GROUP BY p.department ORDER BY fpy ASC

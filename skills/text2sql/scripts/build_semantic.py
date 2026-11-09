@@ -219,7 +219,10 @@ def render_markdown(sections, tables, fk_list, row_counts) -> str:
     lines.append(">   `fact_work_order.product_id`、`fact_work_order.line_id`、")
     lines.append(">   `fact_process_record.lot_id / process_id / equipment_id`、")
     lines.append(">   `fact_inventory.material_id`、`fact_receivable.customer_id` 等在 DDL 中未声明外键，")
-    lines.append(">   但语义上关联同名主数据/事实表，**按 ID 列关联，禁止在单号/名称上做字符串截切匹配**。\n")
+    lines.append(">   但语义上关联同名主数据/事实表，**按 ID 列关联，禁止在单号/名称上做字符串截切匹配**。")
+    lines.append("> - `fact_process_record.department` 是过站操作员所属部门的记录时点快照")
+    lines.append(">   （由 `operator_id` 回填自 `dim_employee.department`），按部门统计产量/不良/工时")
+    lines.append(">   时直接按该列分组，无需再 JOIN `dim_employee`。\n")
     return "\n".join(lines)
 
 

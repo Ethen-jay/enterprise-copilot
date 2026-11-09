@@ -2,7 +2,7 @@
 
 > - 列名/类型/注释来源：`data_model/schema_postgres.sql`（PostgreSQL DDL，列名唯一权威）
 > - 行数来源：`data/ic_substrate.db` 只读实测；重新生成：`python scripts/build_semantic.py`
-> - 生成时间：2026-09-27 22:09；数据时间窗：**2026-06-01 ~ 2026-09-24**
+> - 生成时间：2026-11-09 12:46；数据时间窗：**2026-06-01 ~ 2026-09-24**
 >
 > **方言提醒（写 SQL 必读）**：DDL 是 PostgreSQL 类型（VARCHAR/NUMERIC/SMALLINT/TIMESTAMP），
 > 但执行库是 **SQLite**。生成 SQL 必须用 SQLite 方言：日期处理用 `date()/datetime()/strftime()`，
@@ -257,6 +257,7 @@
 | rework_panels | INT |  |  |
 | is_rework_pass | SMALLINT |  | 1=返工重过站(口径陷阱) |
 | remark | VARCHAR(30) |  |  |
+| department | VARCHAR(20) |  | 过站操作员所属部门(记录时点快照;由operator_id→dim_employee.department回填) |
 
 ### 19. fact_defect
 
@@ -335,3 +336,6 @@
 >   `fact_process_record.lot_id / process_id / equipment_id`、
 >   `fact_inventory.material_id`、`fact_receivable.customer_id` 等在 DDL 中未声明外键，
 >   但语义上关联同名主数据/事实表，**按 ID 列关联，禁止在单号/名称上做字符串截切匹配**。
+> - `fact_process_record.department` 是过站操作员所属部门的记录时点快照
+>   （由 `operator_id` 回填自 `dim_employee.department`），按部门统计产量/不良/工时
+>   时直接按该列分组，无需再 JOIN `dim_employee`。

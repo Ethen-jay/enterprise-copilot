@@ -1,4 +1,4 @@
-# 语义层 · 高频问法 → 正确 SQL 范例（20 条）
+# 语义层 · 高频问法 → 正确 SQL 范例（30 条）
 
 > 每条范例均已通过 `scripts/check_few_shot.py` 在 `data/ic_substrate.db` 只读实测。
 > 结构固定（`### FSxx` 分节 + 元信息行 + ```sql 代码块 + 为什么），供 schema_linker 按涉及表挑选后拼入生成 prompt。
@@ -515,3 +515,300 @@ ORDER BY outstanding DESC;
 - 为什么：账龄只分析未结清账款（99 笔）；快照日由 config.SNAPSHOT_DATE 注入（默认 2026-09-24）。
   默认快照下所有账款尚未到期（逾期四桶为 0 是正确结果，未到期 738,598.07 元）；
   切到 2026-10-31 时逾期 389,373.20 元。receive_date 含未来日期，不参与账龄计算。
+
+---
+
+### FS21. 上个月各部门（事业部）产量排名
+- 涉及表: fact_process_record
+- 规则: R2过滤返工、时间按out_time、部门用 department 快照、产量为过站产出量
+- 适用问法: 部门 事业部 按部门 各部门 产量 产量排名 部门产量 上个月 上月
+
+```sql
+SELECT p.department,
+       SUM(p.input_panels) AS input_panels,
+       SUM(p.good_panels) AS good_panels
+FROM fact_process_record p
+WHERE p.is_rework_pass = 0
+  AND date(p.out_time) >= date('2026-09-24', 'start of month', '-1 month')
+  AND date(p.out_time) <  date('2026-09-24', 'start of month')
+GROUP BY p.department
+ORDER BY good_panels DESC;
+```
+- 为什么：`department` 是过站操作员所属部门的记录时点快照（由 operator_id 回填），
+  按部门统计直接 GROUP BY 该列，无需再 JOIN dim_employee；产量按主记录 SUM(good_panels)，
+  时间口径用出站时间 out_time。实测 2026-08：制造 58,643、生管 53,218、设备 40,509、
+  业务 32,766、品质 24,164（排板）。部门产量是过站产出量，各部门不能相加当全厂唯一产量。
+  “事业部”问法按现有部门维度回答，不臆造层级。
+
+---
+
+### FS22. 本月完工批次的 RTY 均值与中位数（按月归属批次）
+- 涉及表: fact_process_record, fact_work_order
+- 规则: R2、R3、17站、按P17出站时间归属批次、逐批RTY再汇总
+- 适用问法: 本月 RTY 本月直通率 月度RTY 完工批次 中位数 平均直通率
+
+```sql
+WITH fpy AS (
+  SELECT p.lot_id, p.process_id,
+         p.good_panels * 1.0 / p.input_panels AS f,
+         p.out_time
+  FROM fact_process_record p
+  JOIN fact_work_order w ON w.lot_id = p.lot_id
+  WHERE w.lot_status = '已完工'       -- R3：整批排除在制
+    AND p.is_rework_pass = 0         -- R2：排除返工重过站
+    AND p.input_panels > 0
+), lot_rty AS (
+  SELECT lot_id,
+         MAX(CASE WHEN process_id='P17' THEN out_time END) AS lot_end,  -- 按P17终检出站时间归月
+         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)
+       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)
+       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)
+       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)
+       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)
+       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)
+       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)
+       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)
+       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty
+  FROM fpy
+  GROUP BY lot_id
+  HAVING COUNT(DISTINCT process_id) = 17
+), ordered AS (
+  SELECT rty,
+         ROW_NUMBER() OVER (ORDER BY rty) AS rn,
+         COUNT(*) OVER () AS n
+  FROM lot_rty
+  WHERE date(lot_end) >= date('2026-09-24', 'start of month')
+    AND date(lot_end) <= date('2026-09-24')
+), mid AS (
+  SELECT rty FROM ordered WHERE rn IN ((n + 1) / 2, (n + 2) / 2)
+)
+SELECT (SELECT COUNT(*) FROM ordered) AS lot_cnt,
+       ROUND((SELECT AVG(rty) FROM ordered), 4) AS avg_rty,
+       ROUND((SELECT AVG(rty) FROM mid), 4) AS median_rty;
+```
+- 为什么：RTY 是批次级指标，问“本月”时只能按批次归月，不能把每道工序的 out_time 各自过滤
+  （会截断连乘）。先逐批算 RTY，再对本月批次的 rty 集合取均值/中位数。
+  实测 2026-09：187 批，均值 0.8146，中位数 0.8182。
+
+---
+
+### FS23. 各部门一次通过率（部门不适用 RTY 拆分）
+- 涉及表: fact_process_record, fact_work_order
+- 规则: R2、R3、部门直接用department、部门FPY先SUM再相除
+- 适用问法: 各部门 FPY 部门一次通过率 部门良率 按部门 各部门良率 部门RTY
+
+```sql
+SELECT p.department,
+       SUM(p.input_panels) AS input_panels,
+       SUM(p.good_panels) AS good_panels,
+       ROUND(SUM(p.good_panels) * 1.0 / SUM(p.input_panels), 4) AS fpy
+FROM fact_process_record p
+JOIN fact_work_order w ON w.lot_id = p.lot_id
+WHERE w.lot_status = '已完工'
+  AND p.is_rework_pass = 0
+  AND p.input_panels > 0
+GROUP BY p.department
+ORDER BY fpy ASC;
+```
+- 为什么：`department` 是逐条过站记录的操作员部门快照，实测 17 道工序都由 5 个部门的人员操作过，
+  同一批次跨部门、同一工序也可跨部门，因此**不能把 RTY 按部门拆分**。问“部门 RTY”时应返回
+  部门 FPY（SUM(good)/SUM(input)）并注明这不是 17 站连乘的全流程 RTY。按部门统计直接 GROUP BY
+  `fact_process_record.department`，不要再 JOIN dim_employee（会放大/改变口径）。
+
+---
+
+### FS24. 全期准时交付率 OTD（单指标）
+- 涉及表: fact_shipment, fact_sales_order_item
+- 规则: ship_date≤MIN(due_date)、状态已出货、一条出货计一次
+- 适用问法: 全期 OTD 准时交付率 准时率 交付达成 整体准时率
+
+```sql
+SELECT COUNT(*) AS ship_cnt,
+       SUM(CASE WHEN date(s.ship_date) <= date(d.due_date) THEN 1 ELSE 0 END) AS on_time_cnt,
+       ROUND(SUM(CASE WHEN date(s.ship_date) <= date(d.due_date) THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4) AS otd
+FROM fact_shipment s
+JOIN (
+  SELECT order_id, MIN(due_date) AS due_date
+  FROM fact_sales_order_item
+  WHERE due_date IS NOT NULL
+  GROUP BY order_id
+) d ON d.order_id = s.order_id
+WHERE s.ship_date IS NOT NULL
+  AND s.status = '已出货';
+```
+- 为什么：OTD 分子是“实际出货日 ≤ 订单最早交期”的出货记录数，分母是有交期的出货记录数；
+  交期必须按订单粒度取 MIN(due_date)，因为 fact_shipment 只挂 order_id 且没有 scheduled_date。
+  时间口径用实际出货日 ship_date，不要用 due_date 过滤。实测全期 301 条出货、准时 165 条、OTD 54.82%。
+
+---
+
+### FS25. 各客户 OTD（OTD 无部门维度）
+- 涉及表: fact_shipment, fact_sales_order_item, dim_customer
+- 规则: R1、ship_date≤MIN(due_date)、按客户聚合、无部门字段
+- 适用问法: 客户 OTD 客户准时率 哪些客户准时 客户交付 按客户 部门准时率
+
+```sql
+SELECT c.customer_id,
+       c.customer_name,
+       COUNT(*) AS ship_cnt,
+       SUM(CASE WHEN date(s.ship_date) <= date(d.due_date) THEN 1 ELSE 0 END) AS on_time_cnt,
+       ROUND(SUM(CASE WHEN date(s.ship_date) <= date(d.due_date) THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4) AS otd
+FROM fact_shipment s
+JOIN (
+  SELECT order_id, MIN(due_date) AS due_date
+  FROM fact_sales_order_item
+  WHERE due_date IS NOT NULL
+  GROUP BY order_id
+) d ON d.order_id = s.order_id
+JOIN dim_customer c ON c.customer_id = s.customer_id
+WHERE s.ship_date IS NOT NULL
+  AND s.status = '已出货'
+GROUP BY c.customer_id, c.customer_name
+ORDER BY otd ASC;
+```
+- 为什么：`fact_shipment` 没有部门字段，订单/出货也没有销售归属字段，**OTD 不能按部门拆**；
+  `dim_customer.sales_contact` 取值是“业务32”这类编号，与 dim_employee 对不上，禁止反推。
+  问“各部门准时率”时应说明数据不含部门归属，改为按客户/区域回答。
+  客户维度必须 JOIN dim_customer 用 customer_id 聚合，不能按 customer_name_raw 分组。
+
+---
+
+### FS26. 快照日未结清应收总览（账龄单指标）
+- 涉及表: fact_receivable
+- 规则: 只看未结清、余额COALESCE、按快照日双向划分
+- 适用问法: 应收 账龄 逾期金额 未到期余额 未收 欠款 快照
+
+```sql
+SELECT COUNT(*) AS open_bills,
+       ROUND(SUM(r.amount - COALESCE(r.received_amount, 0)), 2) AS outstanding,
+       ROUND(SUM(CASE WHEN date(r.due_date) <  date('2026-09-24')
+                      THEN r.amount - COALESCE(r.received_amount, 0) ELSE 0 END), 2) AS overdue,
+       ROUND(SUM(CASE WHEN date(r.due_date) >= date('2026-09-24')
+                      THEN r.amount - COALESCE(r.received_amount, 0) ELSE 0 END), 2) AS not_due
+FROM fact_receivable r
+WHERE r.status IN ('部分', '未收')
+  AND r.due_date IS NOT NULL
+  AND r.amount - COALESCE(r.received_amount, 0) > 0;
+```
+- 为什么：账龄只分析未结清账款（99 笔），余额 = amount - COALESCE(received_amount,0)；
+  due_date 等于快照日算未到期（信用期到日终）。实测 9-24 快照：未到期 738,598.07 元、逾期 0 元
+  （这是正确结果，不是查询出错）。receive_date 含 101 行未来日期，禁止参与账龄。
+
+---
+
+### FS27. 各客户未结清应收笔数与余额（账龄无部门维度）
+- 涉及表: fact_receivable, dim_customer
+- 规则: R1、只看未结清、余额COALESCE、无部门字段
+- 适用问法: 客户 应收 未结清 欠款 笔数 余额 账龄 部门应收
+
+```sql
+SELECT c.customer_id,
+       c.customer_name,
+       COUNT(*) AS open_bills,
+       ROUND(SUM(r.amount - COALESCE(r.received_amount, 0)), 2) AS outstanding
+FROM fact_receivable r
+JOIN dim_customer c ON c.customer_id = r.customer_id
+WHERE r.status IN ('部分', '未收')
+  AND r.due_date IS NOT NULL
+  AND r.amount - COALESCE(r.received_amount, 0) > 0
+GROUP BY c.customer_id, c.customer_name
+ORDER BY open_bills DESC;
+```
+- 为什么：账龄/应收按客户聚合必须走 dim_customer.customer_id；`fact_receivable` 没有部门或销售负责人字段，
+  **不能按部门拆账龄**，`dim_customer.sales_contact` 与 dim_employee 值域不对应，禁止反推。
+  问“各部门应收”时应说明数据不含部门归属，改为按客户/区域回答。
+
+---
+
+### FS28. 本月电测通过率与 DPPM（电测按 test_time）
+- 涉及表: fact_etest
+- 规则: pass/tested口径、时间用test_time、不良用tested-pass
+- 适用问法: 本月 电测 电测通过率 电测良率 P15 DPPM 电性测试
+
+```sql
+SELECT SUM(tested_panels) AS tested_panels,
+       SUM(pass_panels) AS pass_panels,
+       ROUND(SUM(pass_panels) * 1.0 / SUM(tested_panels), 4) AS pass_rate,
+       ROUND((SUM(tested_panels) - SUM(pass_panels)) * 1000000.0 / SUM(tested_panels), 0) AS dppm
+FROM fact_etest
+WHERE date(test_time) >= date('2026-09-24', 'start of month')
+  AND date(test_time) <= date('2026-09-24')
+  AND tested_panels > 0;
+```
+- 为什么：电测时间口径用 test_time（不是生产 out_time）；通过率 = pass/tested；
+  不良/DPPM 必须用 tested_panels - pass_panels，不能把 open_fail+short_fail+isolation_fail
+  相加（实测三列与总不良不守恒，仅 376/1,582 行相等）。fact_etest 每批一行，不要 JOIN 返工重过站放大分母。
+  实测 2026-09：5,031 / 4,907 = 97.54%，DPPM 24,647。
+
+---
+
+### FS29. 各部门电测通过率（P15 过站部门关联）
+- 涉及表: fact_etest, fact_process_record
+- 规则: 每批唯一P15主记录、按department分组、不放大分母
+- 适用问法: 各部门 电测通过率 部门电测 按部门 P15 部门良率
+
+```sql
+SELECT p.department,
+       COUNT(*) AS lots,
+       SUM(e.tested_panels) AS tested_panels,
+       SUM(e.pass_panels) AS pass_panels,
+       ROUND(SUM(e.pass_panels) * 1.0 / SUM(e.tested_panels), 4) AS pass_rate
+FROM fact_etest e
+JOIN fact_process_record p
+  ON p.lot_id = e.lot_id
+ AND p.process_id = 'P15'
+ AND p.is_rework_pass = 0          -- 每批唯一主记录，避免返工重过站放大
+GROUP BY p.department
+ORDER BY pass_rate ASC;
+```
+- 为什么：fact_etest 没有部门字段，唯一可行路径是用 lot_id 关联 P15 主过站记录取 department；
+  实测 1,582 批全部能唯一匹配（P15 每批主记录 1 条，返工记录另计）。
+  该部门是“电测过站操作员所属部门”，不是品质部专属；跨部门支援人员按主部门计入，不做二次分摊。
+  部门通过率按 SUM(pass)/SUM(tested) 先汇总再相除，不能对各批通过率简单平均。
+
+---
+
+### FS30. 单一产品类型的 RTY（按产品类聚合）
+- 涉及表: fact_process_record, fact_work_order, dim_product
+- 规则: R2、R3、17站连乘、单产品类、输出product_type
+- 适用问法: RF FCBGA FCCSP RTY 产品类 产品类型 平均直通率 单一产品
+
+```sql
+WITH fpy AS (
+  SELECT p.lot_id, p.process_id,
+         p.good_panels * 1.0 / p.input_panels AS f
+  FROM fact_process_record p
+  JOIN fact_work_order w ON w.lot_id = p.lot_id
+  WHERE w.lot_status = '已完工'
+    AND p.is_rework_pass = 0
+    AND p.input_panels > 0
+    AND p.process_id IN ('P01','P02','P03','P04','P05','P06','P07','P08',
+                         'P09','P10','P11','P12','P13','P14','P15','P16','P17')
+), lot_rty AS (
+  SELECT lot_id,
+         MAX(CASE WHEN process_id='P01' THEN f END) * MAX(CASE WHEN process_id='P02' THEN f END)
+       * MAX(CASE WHEN process_id='P03' THEN f END) * MAX(CASE WHEN process_id='P04' THEN f END)
+       * MAX(CASE WHEN process_id='P05' THEN f END) * MAX(CASE WHEN process_id='P06' THEN f END)
+       * MAX(CASE WHEN process_id='P07' THEN f END) * MAX(CASE WHEN process_id='P08' THEN f END)
+       * MAX(CASE WHEN process_id='P09' THEN f END) * MAX(CASE WHEN process_id='P10' THEN f END)
+       * MAX(CASE WHEN process_id='P11' THEN f END) * MAX(CASE WHEN process_id='P12' THEN f END)
+       * MAX(CASE WHEN process_id='P13' THEN f END) * MAX(CASE WHEN process_id='P14' THEN f END)
+       * MAX(CASE WHEN process_id='P15' THEN f END) * MAX(CASE WHEN process_id='P16' THEN f END)
+       * MAX(CASE WHEN process_id='P17' THEN f END) AS rty
+  FROM fpy
+  GROUP BY lot_id
+  HAVING COUNT(DISTINCT process_id) = 17
+)
+SELECT pr.product_type,
+       COUNT(*) AS lot_cnt,
+       ROUND(AVG(r.rty), 4) AS avg_rty
+FROM lot_rty r
+JOIN fact_work_order w ON w.lot_id = r.lot_id
+JOIN dim_product pr ON pr.product_id = w.product_id
+WHERE pr.product_type = 'RF'
+GROUP BY pr.product_type;
+```
+- 为什么：问“某产品类 RTY”时，结果必须带 `product_type` 列，不能只返回一个数值——否则无法核对是哪个产品类。
+  产品类型经 `fact_work_order.product_id → dim_product` 关联，先按批次算 RTY 再对批次集合 AVG。
+  实测 RF 类 110 批、平均 RTY 0.8397；FCBGA/FCCSP 对比只需把 WHERE 改为 `IN ('FCBGA','FCCSP')` 并 GROUP BY。
+

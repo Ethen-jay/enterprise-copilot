@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 # 路径统一由 config 收口
 from .config import PROJECT_ROOT, SEMANTIC_DIR, DB_PATH
 from .anchor import get_anchor_date
+from . import datasource, metric_dict
 
 MAX_TABLES = 4          # 候选表上限（Top2~4）
 MAX_FEW_SHOTS = 6       # 拼入的范例条数上限
@@ -293,8 +294,11 @@ def fetch_examples(con: sqlite3.Connection, table_names: List[str]) -> Dict[str,
 # ----------------------------------------------------------------------
 # 4. 拼接 schema 上下文
 # ----------------------------------------------------------------------
-def _all_tables_overview(kw_entries: List[dict]) -> str:
-    lines = ["**全库 22 张表（只能使用这些表）：**"]
+def _all_tables_overview(kw_entries: List[dict], has_user_tables: bool = False) -> str:
+    if has_user_tables:
+        lines = ["**业务库表（只能使用这些表；用户上传表见第四节）：**"]
+    else:
+        lines = ["**全库 22 张表（只能使用这些表）：**"]
     for ent in kw_entries:
         lines.append("- `%s`：%s" % (ent["table"], ent.get("business_name", "")))
     return "\n".join(lines)
@@ -316,18 +320,33 @@ def build_context(question: str,
                   table_sections: Optional[Dict[str, str]] = None,
                   shots: Optional[List[dict]] = None,
                   con: Optional[sqlite3.Connection] = None,
-                  anchor_date: Optional[str] = None) -> LinkResult:
+                  anchor_date: Optional[str] = None,
+                  use_metric_dict: bool = True) -> LinkResult:
     """
     主入口：问题 -> LinkResult（含 context_text）。
 
     anchor_date：业务基准日；None = 运行时查库动态探测（anchor.py）。
     拼入 prompt 的语义层文本（tables/metrics/few_shot）中的示例日期
     会被统一替换为该锚点。
+    use_metric_dict：是否注入人工确认的指标口径字典；默认 True，
+    仅评测消融时置 False，不影响线上默认行为。
     """
     kw_entries = kw_entries if kw_entries is not None else load_keywords()
     table_sections = table_sections if table_sections is not None else load_table_sections()
     shots = shots if shots is not None else load_few_shots()
     anchor = anchor_date or get_anchor_date().date
+
+    # 用户上传的 xlsx/csv 表：动态加入选表关键词与分节；
+    # 读取失败时降级为只有业务库（不影响原有问数链路）。
+    try:
+        user_entries, user_sections, user_block = datasource.load_prompt_assets()
+    except Exception:
+        user_entries, user_sections, user_block = [], {}, ""
+    has_user_tables = bool(user_entries)
+    if user_entries:
+        kw_entries = list(kw_entries) + user_entries
+        table_sections = dict(table_sections)
+        table_sections.update(user_sections)
 
     warnings: List[str] = []
     picked = score_and_pick(question, kw_entries)
@@ -336,7 +355,9 @@ def build_context(question: str,
 
     own_con = con if con is not None else _open_ro()
     try:
-        examples = fetch_examples(own_con, [p.table for p in picked])
+        # 用户上传表在独立附加库，示例值已随分节给出，这里只取业务库表
+        business_tables = [p.table for p in picked if not p.table.startswith("userdb.")]
+        examples = fetch_examples(own_con, business_tables)
     finally:
         if con is None:
             own_con.close()
@@ -347,7 +368,10 @@ def build_context(question: str,
     # ---- 拼上下文文本（语义层示例日期 -> 运行时锚点）----
     parts: List[str] = []
     parts.append("# Schema 上下文（业务基准日 ANCHOR = '%s'，即数据最新日）\n" % anchor)
-    parts.append(_all_tables_overview(kw_entries))
+    parts.append(_all_tables_overview(
+        [e for e in kw_entries if not e["table"].startswith("userdb.")],
+        has_user_tables=has_user_tables,
+    ))
     parts.append("\n## 一、本次问题选中的表（%d 张）\n" % len(picked))
     for p in picked:
         tag = "直接命中" if p.direct else "JOIN桥接(由 %s 引入)" % p.via
@@ -371,6 +395,15 @@ def build_context(question: str,
         for sid in picked_shots:
             parts.append(apply_anchor(shot_map[sid]["text"], anchor))
             parts.append("\n---\n")
+
+    # 用户上传表（附加库 userdb）与人工确认的指标口径字典：
+    # 均按“有则追加、无则完全不出现”处理，保证没有上传/没有字典时
+    # prompt 与原有基线逐字一致。
+    if user_block:
+        parts.append("\n" + user_block)
+    metric_section = metric_dict.load_metric_section() if use_metric_dict else ""
+    if metric_section:
+        parts.append("\n" + metric_section)
 
     return LinkResult(
         question=question,
