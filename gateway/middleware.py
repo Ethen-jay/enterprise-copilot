@@ -30,6 +30,7 @@ logger = logging.getLogger("gateway.audit")
 _PUBLIC_PATHS = {
     "/", "/health", "/api/health", "/rag/health", "/doc/health",
     "/docs", "/openapi.json", "/redoc", "/login",
+    "/auth/login", "/auth/register",
 }
 _PUBLIC_PREFIXES = ("/static/", "/favicon")
 

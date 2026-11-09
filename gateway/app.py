@@ -7,7 +7,8 @@ gateway/app.py —— 一体化统一入口（F2）
   - RAG 知识问答：辅助，挂在 /rag/*（/rag/chat、/rag/ingest、/rag/health）
   - 文档转换 Agent：辅助，挂在 /doc/*（/doc/convert、/doc/download、/doc/health）
 
-统一前端 web/index.html：SQL 取数为默认主页，RAG/文档转换为侧边页签。
+统一前端 web/index.html：只保留「数据问答」「知识问答」两个页签；文档转换
+能力仍挂在 /doc/*，但仅作为内部链路与评测脚本使用，前端不再暴露单独入口。
 
 启动：
     python -m uvicorn gateway.app:app --host 127.0.0.1 --port 8000
@@ -15,26 +16,33 @@ gateway/app.py —— 一体化统一入口（F2）
 
 import logging
 import os
+import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from common import users
 from common.auth import (
     TOKEN_TTL_SECONDS,
     create_token,
+    current_user,
     password_required,
-    verify_credentials,
 )
+from common.upload_classify import classify_file
+from common.users import UserError
 from skills.text2sql.service import router as sql_router, health as sql_health
 from skills.rag_qa.service import router as rag_router
 from skills.doc_agent.service import router as doc_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+# 账号库初始化 + 首次启动管理员引导（库为空时创建 admin，随机密码只在日志打印一次）
+users.bootstrap_admin()
 
 # 中间件模式开关：standard（默认，单进程内存限流）/ production（Redis 滑动窗口限流）
 _MIDDLEWARE_MODE = os.getenv("GATEWAY_MIDDLEWARE", "standard").strip().lower()
@@ -106,11 +114,44 @@ async def validation_exc_handler(request: Request, exc: RequestValidationError):
 
 
 # ----------------------------------------------------------------------
-# 三大技能按前缀挂载：SQL 为主（根），RAG / 文档转换为辅助（子路径）
+# 三大技能按前缀挂载：数据问答为主（根），RAG / 文档转换为辅助（子路径）
 # ----------------------------------------------------------------------
 app.include_router(sql_router)                     # /ask /health
 app.include_router(rag_router, prefix="/rag")      # /rag/chat /rag/ingest /rag/health
 app.include_router(doc_router, prefix="/doc")      # /doc/convert /doc/download /doc/health
+
+
+# ----------------------------------------------------------------------
+# 上传分流：按文件内容判别“结构化数据表 / 叙述性文档 / SQLite 数据库”
+# 只返回判定与可解释依据，真正入库仍走各技能既有接口（前端确认后调用）。
+# ----------------------------------------------------------------------
+MAX_CLASSIFY_BYTES = 50 * 1024 * 1024
+
+
+@app.post("/ingest/classify")
+async def ingest_classify(file: UploadFile = File(...), user: str = Depends(current_user)):
+    filename = file.filename or "upload"
+    suffix = Path(filename).suffix.lower()[:16]
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="ingest_", dir=tempfile.gettempdir())
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_CLASSIFY_BYTES:
+                    raise HTTPException(status_code=413, detail="文件超过 50MB 上限")
+                out.write(chunk)
+        result = classify_file(Path(tmp_path), filename)
+        result["size_bytes"] = total
+        return result
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ----------------------------------------------------------------------
@@ -138,33 +179,118 @@ def api_health(probe: bool = False):
 
 
 # ----------------------------------------------------------------------
-# 登录：校验账号 + 密码（AUTH_USERS；未配置时用共享 API Key 当密码），
-# 成功后签发 JWT，后续请求一律凭令牌识别身份（服务端不再信任 X-User）。
+# 账号体系：注册 / 登录 / 当前用户 / 改密
+# 身份一律由登录签发的 JWT 派生（服务端不信任客户端 X-User）。
 # ----------------------------------------------------------------------
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    confirm_password: str = ""
+    display_name: str = ""
+
+
+class AuthLoginRequest(BaseModel):
+    username: str = ""
+    password: str = ""
+    account: str = ""  # 兼容旧前端/脚本的 account 字段
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+    confirm_password: str = ""
+
+
 class LoginRequest(BaseModel):
+    """旧 /login 兼容入口（回归脚本仍在用）。"""
     account: str
     password: str = ""
-    api_key: str = ""  # 兼容旧前端：api_key 字段视同密码
+    api_key: str = ""
 
 
-@app.post("/login", tags=["gateway"])
-def login(req: LoginRequest):
-    account = verify_credentials(req.account, req.password or req.api_key)
-    if not account:
-        return {"ok": False, "error": "账号或密码错误（账号仅限字母/数字/下划线/连字符，1-32 位）"}
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else ""
+
+
+def _public_user(user: dict) -> dict:
     return {
-        "ok": True,
-        "account": account,
-        "token": create_token(account),
-        "token_type": "Bearer",
-        "expires_in": TOKEN_TTL_SECONDS,
-        "auth_enabled": True,
-        "password_required": password_required(),
+        "username": user["username"],
+        "display_name": user.get("display_name", ""),
+        "role": user.get("role", "user"),
+        "created_at": user.get("created_at", ""),
     }
 
 
+def _issue_token(user: dict) -> dict:
+    return {
+        "ok": True,
+        "account": user["username"],
+        "token": create_token(user["username"], user["token_version"]),
+        "token_type": "Bearer",
+        "expires_in": TOKEN_TTL_SECONDS,
+        "user": _public_user(user),
+        "auth_enabled": True,
+        "password_required": True,
+    }
+
+
+@app.post("/auth/register", tags=["auth"])
+def auth_register(req: RegisterRequest):
+    if req.password != req.confirm_password:
+        raise HTTPException(status_code=400, detail="两次输入的密码不一致")
+    try:
+        user = users.create_user(req.username, req.password, req.display_name)
+    except UserError as e:
+        raise HTTPException(status_code=e.status, detail=e.message)
+    return {"ok": True, "user": _public_user(user)}
+
+
+@app.post("/auth/login", tags=["auth"])
+def auth_login(req: AuthLoginRequest, request: Request):
+    username = (req.username or req.account).strip()
+    if not username or not req.password:
+        raise HTTPException(status_code=400, detail="请输入用户名和密码")
+    try:
+        user = users.authenticate(username, req.password, _client_ip(request))
+    except UserError as e:
+        raise HTTPException(status_code=e.status, detail=e.message)
+    return _issue_token(user)
+
+
+@app.post("/login", tags=["auth"])
+def login(req: LoginRequest, request: Request):
+    """兼容旧脚本的登录入口，语义与 /auth/login 一致（必须真实密码）。"""
+    try:
+        user = users.authenticate(
+            (req.account or "").strip(), req.password or req.api_key, _client_ip(request)
+        )
+    except UserError as e:
+        raise HTTPException(status_code=e.status, detail=e.message)
+    return _issue_token(user)
+
+
+@app.get("/auth/me", tags=["auth"])
+def auth_me(request: Request, user: str = Depends(current_user)):
+    profile = users.get_user(user)
+    if not profile:
+        raise HTTPException(status_code=401, detail="用户不存在或已删除，请重新登录")
+    return {"ok": True, "user": _public_user(profile)}
+
+
+@app.post("/auth/password", tags=["auth"])
+def auth_change_password(req: ChangePasswordRequest, user: str = Depends(current_user)):
+    if req.new_password != req.confirm_password:
+        raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
+    try:
+        users.change_password(user, req.old_password, req.new_password)
+    except UserError as e:
+        raise HTTPException(status_code=e.status, detail=e.message)
+    # 改密自增 token_version：旧令牌立即失效，前端需重新登录
+    return {"ok": True, "relogin_required": True, "detail": "密码已修改，请重新登录"}
+
+
 # ----------------------------------------------------------------------
-# 统一前端首页（SQL 为主，RAG / 文档转换为侧边页签）
+# 统一前端首页（数据问答 + 知识问答两个页签）
 # ----------------------------------------------------------------------
 @app.get("/", include_in_schema=False)
 def index():

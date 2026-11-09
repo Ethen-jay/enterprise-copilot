@@ -2,13 +2,15 @@
 """
 common/auth.py —— 统一身份认证（JWT / HS256）
 
-身份只从令牌 claims 派生，业务代码不再读取客户端传来的 X-User：
-  1. 用户令牌：POST /login 校验账号（+密码/共享密钥）后签发，claims.sub 即账号，
-     带 iat/exp/iss，默认 12 小时过期（AUTH_TOKEN_TTL_HOURS 可调）；
+identity 由令牌声明（claims）派生，业务代码不再读取客户端传来的 X-User：
+  1. 用户令牌：POST /auth/login 校验账号密码后签发，claims.sub 即用户名，
+     带 iat/exp/iss/ver，默认 12 小时过期（AUTH_TOKEN_TTL_HOURS 可调）；
+     ver 与 data/users.db 的 token_version 对齐，改密后旧令牌立即失效；
   2. 服务通道：X-API-Key（GATEWAY_API_KEYS）映射到固定服务账号
      （GATEWAY_SERVICE_ACCOUNT，默认 service）。服务账号有自己的知识库，
      不能冒充任意用户；
-  3. 未认证访问受保护接口一律 401，不存在"缺 X-User 回退 default"。
+  3. 未认证访问受保护接口一律 401，不存在"缺 X-User 回退 default"，
+     也没有"未配置账号就任意密码通过"的演示后门（账号见 common/users.py）。
 
 密钥来源：AUTH_JWT_SECRET（推荐，≥32 字符）。未配置时为保证单机演示可启动，
 退化为 data/.jwt_secret 本地持久密钥并打印告警；生产必须显式配置。
@@ -25,6 +27,7 @@ from typing import Optional
 import jwt
 from fastapi import HTTPException, Request
 
+from common import users
 from common.config import GATEWAY_API_KEYS, PROJECT_ROOT
 
 logger = logging.getLogger("gateway.auth")
@@ -35,16 +38,6 @@ _ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 TOKEN_TTL_SECONDS = int(float(os.getenv("AUTH_TOKEN_TTL_HOURS", "12")) * 3600)
 SERVICE_ACCOUNT = (os.getenv("GATEWAY_SERVICE_ACCOUNT", "service").strip() or "service")
-
-# AUTH_USERS="Ethen:密码1,alice:密码2"（生产推荐）；未配置时退回共享 API Key 作为密码
-_AUTH_USERS = {}
-for _item in os.getenv("AUTH_USERS", "").split(","):
-    _item = _item.strip()
-    if not _item:
-        continue
-    _name, _, _pwd = _item.partition(":")
-    if _ACCOUNT_RE.fullmatch(_name.strip()) and _pwd:
-        _AUTH_USERS[_name.strip()] = _pwd
 
 
 def _load_secret() -> str:
@@ -71,11 +64,12 @@ def _load_secret() -> str:
 _SECRET = _load_secret()
 
 
-def create_token(account: str) -> str:
-    """为账号签发访问令牌（sub=账号，带 iat/exp/iss）。"""
+def create_token(account: str, token_version: int = 1) -> str:
+    """为账号签发访问令牌（sub=账号，ver=密码版本，带 iat/exp/iss）。"""
     now = int(time.time())
     payload = {
         "sub": account,
+        "ver": int(token_version),
         "iat": now,
         "exp": now + TOKEN_TTL_SECONDS,
         "iss": _ISSUER,
@@ -98,37 +92,15 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-def verify_credentials(account: str, password: str) -> Optional[str]:
-    """校验登录凭据，成功返回规范化账号，失败返回 None。
-
-    优先级：AUTH_USERS（账号:密码）→ GATEWAY_API_KEYS（共享密钥当密码）→
-    都未配置时为演示模式（仅校验账号格式）。所有比较使用常量时间比较。
-    """
-    account = (account or "").strip()
-    if not _ACCOUNT_RE.fullmatch(account):
-        return None
-    if _AUTH_USERS:
-        expected = _AUTH_USERS.get(account)
-        if expected is None or not hmac.compare_digest(password or "", expected):
-            return None
-        return account
-    if GATEWAY_API_KEYS:
-        if not any(hmac.compare_digest(password or "", k) for k in GATEWAY_API_KEYS):
-            return None
-        return account
-    logger.warning("未配置 AUTH_USERS / GATEWAY_API_KEY，登录不校验密码（仅限演示）")
-    return account
-
-
 def password_required() -> bool:
-    """登录是否需要密码（前端据此显隐密码输入框）。"""
-    return bool(_AUTH_USERS or GATEWAY_API_KEYS)
+    """登录是否必须密码——账号体系已改为真实密码，恒为 True（保留字段供健康检查用）。"""
+    return True
 
 
 def resolve_identity(authorization: str = "", api_key: str = "") -> tuple[str, str]:
     """按凭据派生身份，返回 (user, auth_type)；认证失败返回 ("", "")。
 
-    - Authorization: Bearer <JWT> → claims.sub（用户令牌）
+    - Authorization: Bearer <JWT> → claims.sub（用户令牌，ver 必须与用户库一致）
     - X-API-Key（配置了 GATEWAY_API_KEYS 时）→ 固定服务账号（服务间调用）
     客户端传来的 X-User 一律不参与身份判定。
     """
@@ -140,7 +112,7 @@ def resolve_identity(authorization: str = "", api_key: str = "") -> tuple[str, s
     if token:
         claims = decode_token(token)
         sub = str((claims or {}).get("sub", ""))
-        if sub:
+        if sub and users.token_is_current(sub, (claims or {}).get("ver", 0)):
             return sub, "token"
 
     if api_key and any(hmac.compare_digest(api_key, k) for k in GATEWAY_API_KEYS):
