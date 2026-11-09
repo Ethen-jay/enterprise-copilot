@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from skills.doc_agent.planner import format_to_ext
+
 
 def validate(output_path: str | Path, source_format: str, target_format: str) -> dict:
     """校验转换结果。
@@ -31,7 +33,7 @@ def validate(output_path: str | Path, source_format: str, target_format: str) ->
 
     # 3. 扩展名正确
     ext = path.suffix.lower().lstrip(".")
-    expected_ext = _format_to_ext(target_format)
+    expected_ext = format_to_ext(target_format)
     details["extension"] = ext
     details["expected_extension"] = expected_ext
     if ext != expected_ext:
@@ -88,15 +90,3 @@ def validate(output_path: str | Path, source_format: str, target_format: str) ->
         "issues": issues,
         "details": details,
     }
-
-
-def _format_to_ext(fmt: str) -> str:
-    """格式名转文件扩展名。"""
-    return {
-        "markdown": "md",
-        "pdf": "pdf",
-        "docx": "docx",
-        "html": "html",
-        "xlsx": "xlsx",
-        "txt": "txt",
-    }.get(fmt, fmt)

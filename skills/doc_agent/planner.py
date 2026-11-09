@@ -108,4 +108,13 @@ def _detect_options(instruction: str) -> dict:
     return options
 
 
-
+def format_to_ext(fmt: str) -> str:
+    """格式名转文件扩展名（markdown → md，其余同名）。"""
+    return {
+        "markdown": "md",
+        "pdf": "pdf",
+        "docx": "docx",
+        "html": "html",
+        "xlsx": "xlsx",
+        "txt": "txt",
+    }.get(fmt, fmt)

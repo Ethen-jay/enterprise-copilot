@@ -54,7 +54,7 @@ docker compose up --build -d
 
 - **改了代码必须重启**：`start.bat` 不带 `--reload`，运行中的进程不会加载新代码；关闭窗口重新双击才生效，否则会出现“改了没反应”。
 - **依赖连通性**：`curl http://127.0.0.1:8000/api/health?probe=1`，看 `llm.reachable` 是否为 `true`；RAG 的模型/向量服务不可用时接口返回 503 并在页面提示，不会静默失败。
-- **演示账号**：默认演示模式不校验密码；如需密码，在 `.env` 配置 `AUTH_USERS` 或 `GATEWAY_API_KEY` 后重启。
+- **演示账号**：登录始终需要（`POST /login` 换 JWT）；默认演示模式不校验密码，账号填任意合法名称即可；如需密码，在 `.env` 配置 `AUTH_USERS`（或 `GATEWAY_API_KEY` 当共享密码）后重启。
 - **健康检查**：`/health`、`/api/health`、`/rag/health`、`/doc/health` 均无需登录，可直接用于预检。
 - **崩溃自恢复**：本地裸跑没有进程守护，崩溃后重新双击 `start.bat`；需要自动重启请用 `docker compose up -d`（已配置 `restart: unless-stopped`）。
 
@@ -74,21 +74,27 @@ docker compose up --build -d
 
 新环境需从旧仓复制这两项，或通过 ingest 重建 chroma。
 
-### 知识库按用户隔离
+### 知识库按登录账号隔离
 
-RAG 的知识库**按 `X-User` 请求头隔离**：每个用户一个独立 Chroma collection。
+RAG 的知识库**按登录账号隔离**：每个账号一个独立 Chroma collection（`kb_{账号}`）。
 
-- 缺省或 `X-User: default` → 沿用 `rag_knowledge_base` 共享库；
-- 其他用户 → 各自独立的 `kb_{user}`，互不可见、互不干扰。
+- 身份不由客户端指定：`POST /login` 校验账号后签发 JWT，后续请求带 `Authorization: Bearer <token>`，服务端只从令牌 `sub` 派生用户。`X-User` 请求头已废弃，带了也不会切换知识库，未带令牌一律 401。
+- 账号名沿用历史默认库：账号为 `default` 时沿用 `rag_knowledge_base`（迁移前已入库的数据无需重灌）。
+- 服务通道：配置 `GATEWAY_API_KEY` 后可用 `X-API-Key` 调用，身份固定为服务账号（默认 `service`），用于服务间调用，不能冒充用户。
 
-前端右上角「用户」输入框即设置该标识（存 localStorage）。命令行示例：
+命令行示例（PowerShell，先登录换取令牌）：
 
 ```powershell
-curl -F "file=@文档.md" -H "X-User: alice" http://127.0.0.1:8000/rag/ingest
-curl -H "Content-Type: application/json" -H "X-User: alice" -d '{"question":"..."}' http://127.0.0.1:8000/rag/chat
+# 1. 登录拿令牌（未配置 AUTH_USERS / GATEWAY_API_KEY 时密码可留空，账号仍需合法）
+$login = '{"account":"alice","password":""}'
+$token = (curl.exe -s -X POST http://127.0.0.1:8000/login -H "Content-Type: application/json" -d $login | ConvertFrom-Json).token
+
+# 2. 后续请求统一带 Bearer 令牌，否则 401
+curl.exe -H "Authorization: Bearer $token" -F "file=@文档.md" http://127.0.0.1:8000/rag/ingest
+curl.exe -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d '{"question":"..."}' http://127.0.0.1:8000/rag/chat
 ```
 
-> 注：这是最小多租户 demo（按用户命名的 collection，非正式鉴权）。生产需结合 SSO / API Key 把 `X-User` 与真实身份绑定，并加权限校验。
+> 注：PowerShell 中 `curl` 是 `Invoke-WebRequest` 的别名，示例使用 `curl.exe`；账号仅限字母/数字/下划线/连字符，1-32 位。这是最小多租户 demo（按账号命名的 collection），生产需结合 SSO / 权限体系。
 
 ## API
 
@@ -147,17 +153,25 @@ curl -H "Content-Type: application/json" -H "X-User: alice" -d '{"question":"...
 - Markdown → Word 转换前做列表规范化（列表与正文间补空行），确保 Word 输出真正的列表结构。
 - 旧版二进制格式识别：converter 节点按文件头魔数（OLE2）嗅探，`.doc`/`.xls` 改名成 `.docx`/`.xlsx` 骗不过；命中即返回可操作中文提示，而非抛出含内部临时路径的裸库报错。
 
-## 认证（可选）
+## 认证
 
-默认 `GATEWAY_API_KEY` 为空，**不启用认证**（PoC 零行为变更）。填入密钥后（**逗号分隔可配多个 key**），除白名单路径（`/`、`/health`、`/api/health`、`/docs` 等）外，所有业务接口都要求携带正确的密钥，否则返回 401。
+身份一律由登录签发的 JWT 派生，业务接口**默认需要令牌**（除 `/`、`/health`、`/api/health`、`/rag/health`、`/doc/health`、`/login`、`/docs` 等白名单）。未带令牌访问业务接口返回 401。
 
-- 两种传密钥方式：请求头 `X-API-Key: your-key`，或标准 `Authorization: Bearer your-key`（时序安全比较）。
-- 前端页面右上角可填入并保存 API Key（存浏览器 localStorage），请求时用 `X-API-Key` 自动携带。
+- 登录：`POST /login`，请求体 `{"account":"alice","password":"..."}`；账号仅限字母/数字/下划线/连字符（1-32 位）。密码校验规则：配置了 `AUTH_USERS="alice:密码"` 时按账号密码校验；否则配置了 `GATEWAY_API_KEY` 时用共享密钥当密码；两者都未配置则为演示模式，只校验账号格式。
+- 令牌：响应中的 `token` 即 JWT（HS256，默认 12 小时，`AUTH_TOKEN_TTL_HOURS` 可调），后续请求带 `Authorization: Bearer <token>`。签名密钥取 `AUTH_JWT_SECRET`（建议 ≥32 位）；未配置时自动生成 `data/.jwt_secret` 并打告警。
+- 服务通道：配置 `GATEWAY_API_KEY`（逗号分隔可配多个）后，可用 `X-API-Key: your-key` 调用，身份固定为服务账号 `service`（`GATEWAY_SERVICE_ACCOUNT` 可改）。
+- 前端页面登录后把令牌存浏览器 localStorage，所有请求自动带 `Authorization`；令牌过期会提示重新登录。
 - 命令行调用示例：
 
 ```powershell
-curl -H "X-API-Key: your-key" -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d '{"question":"当前在制工单有多少批？"}'
-curl -H "Authorization: Bearer your-key" -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d '{"question":"当前在制工单有多少批？"}'
+# 登录换令牌
+$token = (curl.exe -s -X POST http://127.0.0.1:8000/login -H "Content-Type: application/json" -d '{"account":"alice","password":""}' | ConvertFrom-Json).token
+
+# 用户令牌
+curl.exe -H "Authorization: Bearer $token" -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d '{"question":"当前在制工单有多少批？"}'
+
+# 服务通道（配置 GATEWAY_API_KEY 后可用，身份固定为 service）
+curl.exe -H "X-API-Key: your-key" -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d '{"question":"当前在制工单有多少批？"}'
 ```
 
 ## 测试与回归

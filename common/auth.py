@@ -125,11 +125,28 @@ def password_required() -> bool:
     return bool(_AUTH_USERS or GATEWAY_API_KEYS)
 
 
-def _api_key_valid(request: Request) -> bool:
-    provided = request.headers.get("x-api-key", "")
-    return bool(provided) and any(
-        hmac.compare_digest(provided, k) for k in GATEWAY_API_KEYS
-    )
+def resolve_identity(authorization: str = "", api_key: str = "") -> tuple[str, str]:
+    """按凭据派生身份，返回 (user, auth_type)；认证失败返回 ("", "")。
+
+    - Authorization: Bearer <JWT> → claims.sub（用户令牌）
+    - X-API-Key（配置了 GATEWAY_API_KEYS 时）→ 固定服务账号（服务间调用）
+    客户端传来的 X-User 一律不参与身份判定。
+    """
+    token = ""
+    auth = (authorization or "").strip()
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+
+    if token:
+        claims = decode_token(token)
+        sub = str((claims or {}).get("sub", ""))
+        if sub:
+            return sub, "token"
+
+    if api_key and any(hmac.compare_digest(api_key, k) for k in GATEWAY_API_KEYS):
+        return SERVICE_ACCOUNT, "api_key"
+
+    return "", ""
 
 
 def current_user(request: Request) -> str:
@@ -142,14 +159,12 @@ def current_user(request: Request) -> str:
     if user:
         return user
 
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        claims = decode_token(auth[7:].strip())
-        if claims and _ACCOUNT_RE.fullmatch(str(claims.get("sub", ""))):
-            return str(claims["sub"])
-
-    if _api_key_valid(request):
-        return SERVICE_ACCOUNT
+    user, auth_type = resolve_identity(
+        request.headers.get("authorization", ""),
+        request.headers.get("x-api-key", ""),
+    )
+    if user and (auth_type == "api_key" or _ACCOUNT_RE.fullmatch(user)):
+        return user
 
     raise HTTPException(
         status_code=401,

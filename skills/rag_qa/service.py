@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -19,7 +20,7 @@ from pydantic import BaseModel, Field
 from common.auth import current_user
 from common import chat_memory
 from common.chat_memory import session_header
-from skills.rag_qa import llm_client, rag_engine
+from skills.rag_qa import config, llm_client, rag_engine
 from skills.rag_qa.config import ASYNC_THRESHOLD_MB, LOW_PRIORITY_MB
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -132,7 +133,7 @@ def _validate_ext(filename: str) -> str:
 
 
 # 上传临时文件落盘目录（data/ 已在 .gitignore 中排除）
-UPLOAD_TMP_DIR = Path("data/tmp/uploads")
+UPLOAD_TMP_DIR = config.DATA_DIR / "tmp" / "uploads"
 
 
 async def _save_upload_to_disk(file: UploadFile, dest_dir: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> Path:
@@ -164,6 +165,46 @@ async def _save_upload_to_disk(file: UploadFile, dest_dir: Path, max_bytes: int 
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
+
+
+def _reject_existing(user: str, filename: str, replace: bool) -> None:
+    """同名文档已存在且未启用替换时返回 409，避免旧块残留或误覆盖。"""
+    if not replace and rag_engine.get_store(user).has_document(filename):
+        raise HTTPException(
+            status_code=409,
+            detail=f"同名文档已存在: {filename}，请使用替换上传(replace=true)",
+        )
+
+
+async def _preflight_upload(
+    file: UploadFile, user: str, replace: bool, *, conflict_first: bool = False
+) -> Path:
+    """上传前置检查：落盘 + 大小校验（413）+ 同名冲突（409），返回临时文件路径。
+
+    conflict_first=True 用于 SSE/异步链路（一旦开始推送就无法改状态码）；
+    默认先落盘再查重，保证"传一半失败却删掉旧版"不会发生。
+    调用方负责删除返回的临时文件。
+    """
+    if conflict_first:
+        _reject_existing(user, file.filename, replace)
+
+    try:
+        tmp_path = await _save_upload_to_disk(file, UPLOAD_TMP_DIR)
+    except FileTooLargeError as e:
+        limit_mb = e.args[0] / 1024 / 1024
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件超过大小上限 {limit_mb:.0f}MB，请压缩或拆分后再上传",
+        )
+
+    if not conflict_first:
+        try:
+            _reject_existing(user, file.filename, replace)
+        except HTTPException:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
+    return tmp_path
 
 
 class ChatRequest(BaseModel):
@@ -206,6 +247,54 @@ def _validate_chat_request(req: ChatRequest) -> None:
         )
 
 
+@dataclass
+class _TurnContext:
+    """一轮问答的会话记忆上下文（指代改写后的检索入参）。"""
+    turns: list
+    history: list
+    rewritten: str
+
+
+def _meta_response(req: ChatRequest, turns: list) -> Optional[ChatResponse]:
+    """元问题（"我上一句问了什么"）直接基于会话记忆回答；非元问题返回 None。
+
+    纯同步、不调用模型，可在流式链路推送首帧之前执行。
+    """
+    if not chat_memory.is_meta_question(req.question):
+        return None
+    text, _ = chat_memory.meta_answer(req.question, turns)
+    return ChatResponse(
+        answer=text,
+        citations=[],
+        reflection={"passed": True, "from_memory": True},
+        from_memory=True,
+        memory_turns=len(turns),
+    )
+
+
+async def _turn_context(req: ChatRequest, user: str, session_id: Optional[str],
+                        turns: list) -> _TurnContext:
+    """组装检索入参：显式历史优先，否则取服务端会话记忆；必要时做指代改写。"""
+    history = req.history if req.history else chat_memory.get_history(user, session_id, "rag")
+    rewritten = req.question
+    if turns and chat_memory.needs_rewrite(req.question):
+        rewritten = await llm_client.condense_query(req.question, turns)
+    return _TurnContext(turns=turns, history=history, rewritten=rewritten)
+
+
+def _answer_response(result: dict, ctx: _TurnContext, question: str,
+                     memory_turns: int) -> ChatResponse:
+    """检索问答成功后的统一响应组装（含记忆写入结果的轮数）。"""
+    return ChatResponse(
+        answer=result["answer"],
+        citations=result["citations"],
+        reflection=result.get("reflection", {}),
+        memory_turns=memory_turns,
+        rewritten_question=ctx.rewritten if ctx.rewritten != question else "",
+        used_memory=bool(ctx.turns) and ctx.rewritten != question,
+    )
+
+
 class IngestResponse(BaseModel):
     filename: str
     chunks: int
@@ -244,24 +333,12 @@ async def ingest(
     _validate_arbiter_fields(doc_date, doc_version)
 
     # 先落盘并做大小校验，通过后才查重/删旧，避免传一半失败却删掉旧版
-    try:
-        tmp_path = await _save_upload_to_disk(file, UPLOAD_TMP_DIR)
-    except FileTooLargeError as e:
-        limit_mb = e.args[0] / 1024 / 1024
-        raise HTTPException(
-            status_code=413,
-            detail=f"文件超过大小上限 {limit_mb:.0f}MB，请压缩或拆分后再上传",
-        )
+    tmp_path = await _preflight_upload(file, user, replace)
 
     try:
-        # 同名冲突处理：非替换模式直接 409；替换计数供响应回显（引擎内执行删除）
+        # 替换计数供响应回显（引擎内执行删除）
         store = rag_engine.get_store(user)
         replaced_chunks = store.count_source(file.filename) if replace else 0
-        if not replace and store.has_document(file.filename):
-            raise HTTPException(
-                status_code=409,
-                detail=f"同名文档已存在: {file.filename}，请使用替换上传(replace=true)",
-            )
 
         try:
             result = rag_engine.ingest_path(
@@ -326,22 +403,8 @@ async def ingest_stream(
     _validate_ext(file.filename)
     _validate_arbiter_fields(doc_date, doc_version)
 
-    # 同名冲突：非替换模式在建流前直接 409（SSE 一旦开始就无法改状态码）
-    if not replace and rag_engine.get_store(user).has_document(file.filename):
-        raise HTTPException(
-            status_code=409,
-            detail=f"同名文档已存在: {file.filename}，请使用替换上传(replace=true)",
-        )
-
-    # 响应开始前完成落盘与大小校验，超限直接返回 413
-    try:
-        tmp_path = await _save_upload_to_disk(file, UPLOAD_TMP_DIR)
-    except FileTooLargeError as e:
-        limit_mb = e.args[0] / 1024 / 1024
-        raise HTTPException(
-            status_code=413,
-            detail=f"文件超过大小上限 {limit_mb:.0f}MB，请压缩或拆分后再上传",
-        )
+    # 同名冲突先查（SSE 一旦开始就无法改状态码），再落盘做大小校验（超限 413）
+    tmp_path = await _preflight_upload(file, user, replace, conflict_first=True)
     filename = file.filename
 
     status_box = {"done": False, "result": None, "error": None}
@@ -556,20 +619,8 @@ async def ingest_async(
     _validate_ext(file.filename)
     _validate_arbiter_fields(doc_date, doc_version)
 
-    if not replace and rag_engine.get_store(user).has_document(file.filename):
-        raise HTTPException(
-            status_code=409,
-            detail=f"同名文档已存在: {file.filename}，请使用替换上传(replace=true)",
-        )
-
-    try:
-        tmp_path = await _save_upload_to_disk(file, UPLOAD_TMP_DIR)
-    except FileTooLargeError as e:
-        limit_mb = e.args[0] / 1024 / 1024
-        raise HTTPException(
-            status_code=413,
-            detail=f"文件超过大小上限 {limit_mb:.0f}MB，请压缩或拆分后再上传",
-        )
+    # 先查同名冲突（202 受理后无法再回 409），再落盘做大小校验
+    tmp_path = await _preflight_upload(file, user, replace, conflict_first=True)
 
     size_bytes = tmp_path.stat().st_size
     priority = "low" if _is_low_priority(size_bytes) else "normal"
@@ -910,37 +961,21 @@ async def chat(
     turns = chat_memory.get_turns(user, session_id, "rag")
 
     # 元问题通道：不检索、不走反思，直接基于会话记忆回答
-    if chat_memory.is_meta_question(req.question):
-        text, _ = chat_memory.meta_answer(req.question, turns)
-        return ChatResponse(
-            answer=text,
-            citations=[],
-            reflection={"passed": True, "from_memory": True},
-            from_memory=True,
-            memory_turns=len(turns),
-        )
+    meta = _meta_response(req, turns)
+    if meta is not None:
+        return meta
 
-    history = req.history if req.history else chat_memory.get_history(user, session_id, "rag")
-    rewritten = req.question
-    if turns and chat_memory.needs_rewrite(req.question):
-        rewritten = await llm_client.condense_query(req.question, turns)
+    ctx = await _turn_context(req, user, session_id, turns)
 
     try:
         result = await rag_engine.chat(
-            req.question, history=history, user=user, retrieval_query=rewritten
+            req.question, history=ctx.history, user=user, retrieval_query=ctx.rewritten
         )
         memory_turns = chat_memory.append_turn(
             user, session_id, "rag", req.question, result["answer"],
-            {"rewritten": rewritten},
+            {"rewritten": ctx.rewritten},
         )
-        return ChatResponse(
-            answer=result["answer"],
-            citations=result["citations"],
-            reflection=result.get("reflection", {}),
-            memory_turns=memory_turns,
-            rewritten_question=rewritten if rewritten != req.question else "",
-            used_memory=bool(turns) and rewritten != req.question,
-        )
+        return _answer_response(result, ctx, req.question, memory_turns)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -968,40 +1003,30 @@ async def chat_stream(
         raise HTTPException(status_code=400, detail="问题不能为空")
     _validate_chat_request(req)
 
-    turns = chat_memory.get_turns(user, session_id, "rag")
-
     queue: asyncio.Queue = asyncio.Queue()
 
     def progress_cb(evt: dict) -> None:
         queue.put_nowait(evt)
 
     async def event_generator():
+        turns = chat_memory.get_turns(user, session_id, "rag")
+
         # 元问题：不检索，直接基于会话记忆返回
-        if chat_memory.is_meta_question(req.question):
-            text, _ = chat_memory.meta_answer(req.question, turns)
-            payload = ChatResponse(
-                answer=text,
-                citations=[],
-                reflection={"passed": True, "from_memory": True},
-                from_memory=True,
-                memory_turns=len(turns),
-            )
-            yield _sse("final", payload.model_dump())
+        meta = _meta_response(req, turns)
+        if meta is not None:
+            yield _sse("final", meta.model_dump())
             return
 
         # 先推首条状态再启动任务：检索是同步阻塞调用，先让用户看到"正在检索"
         last = {"stage": "retrieving", "message": "正在检索知识库…"}
         yield _sse("status", last)
 
-        history = req.history if req.history else chat_memory.get_history(user, session_id, "rag")
-        rewritten = req.question
-        if turns and chat_memory.needs_rewrite(req.question):
-            rewritten = await llm_client.condense_query(req.question, turns)
+        ctx = await _turn_context(req, user, session_id, turns)
 
         task = asyncio.create_task(
             rag_engine.chat(
-                req.question, history=history, user=user,
-                progress_cb=progress_cb, retrieval_query=rewritten,
+                req.question, history=ctx.history, user=user,
+                progress_cb=progress_cb, retrieval_query=ctx.rewritten,
             )
         )
         getter: Optional[asyncio.Task] = None
@@ -1037,17 +1062,10 @@ async def chat_stream(
             else:
                 memory_turns = chat_memory.append_turn(
                     user, session_id, "rag", req.question, result["answer"],
-                    {"rewritten": rewritten},
+                    {"rewritten": ctx.rewritten},
                 )
-                payload = ChatResponse(
-                    answer=result["answer"],
-                    citations=result["citations"],
-                    reflection=result.get("reflection", {}),
-                    memory_turns=memory_turns,
-                    rewritten_question=rewritten if rewritten != req.question else "",
-                    used_memory=bool(turns) and rewritten != req.question,
-                )
-                yield _sse("final", payload.model_dump())
+                yield _sse("final", _answer_response(
+                    result, ctx, req.question, memory_turns).model_dump())
         finally:
             if getter is not None and not getter.done():
                 getter.cancel()

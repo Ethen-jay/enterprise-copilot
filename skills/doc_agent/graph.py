@@ -18,7 +18,7 @@ from skills.doc_agent.converters import (
     text_converter,
 )
 from skills.doc_agent.extract import source_to_markdown
-from skills.doc_agent.planner import sniff_legacy_binary_format
+from skills.doc_agent.planner import format_to_ext, sniff_legacy_binary_format
 from skills.doc_agent.planner_v2 import TaskPlan, create_plan
 from skills.doc_agent.reflection import reflect_conversion, CAUSE_TO_ADJUSTMENT
 from skills.doc_agent.validator import validate
@@ -433,7 +433,7 @@ def _execute_conversion(
     tgt = plan.target_format
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    out_ext = _format_to_ext(tgt)
+    out_ext = format_to_ext(tgt)
     out_name = f"output_{src}_to_{tgt}.{out_ext}"
     out_path = str(OUTPUT_DIR / out_name)
 
@@ -528,14 +528,3 @@ def _apply_text_operations(md_path: str, options: dict) -> str:
         text = llm_client.polish_text(text)
     Path(md_path).write_text(text, encoding="utf-8")
     return md_path
-
-
-def _format_to_ext(fmt: str) -> str:
-    return {
-        "markdown": "md",
-        "pdf": "pdf",
-        "docx": "docx",
-        "html": "html",
-        "xlsx": "xlsx",
-        "txt": "txt",
-    }.get(fmt, fmt)

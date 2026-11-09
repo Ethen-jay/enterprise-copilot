@@ -16,15 +16,13 @@ gateway/middleware.py —— 网关企业化基础能力（F2）
 来自 AUTH_JWT_SECRET（见 common/auth.py）。
 """
 
-import hmac
 import json
 import logging
 import time
 import uuid
 from collections import defaultdict, deque
 
-from common.auth import SERVICE_ACCOUNT, decode_token
-from common.config import GATEWAY_API_KEYS
+from common.auth import resolve_identity
 
 logger = logging.getLogger("gateway.audit")
 
@@ -80,31 +78,17 @@ def _is_public(scope: dict) -> bool:
 def _authenticate(scope: dict) -> tuple[str, str]:
     """校验凭据并派生身份，返回 (user, auth_type)。
 
-    - Authorization: Bearer <JWT> → claims.sub（用户令牌）
-    - X-API-Key（配置了 GATEWAY_API_KEYS 时）→ 固定服务账号（服务间调用）
-    认证失败返回 ("", "")。客户端传来的 X-User 一律忽略。
+    凭据解析统一走 common.auth.resolve_identity：Bearer JWT → claims.sub，
+    X-API-Key → 固定服务账号。认证失败返回 ("", "")，客户端传来的 X-User 一律忽略。
     """
-    token = ""
+    authorization = ""
     api_key = ""
     for name, value in scope.get("headers", []):
         if name == b"authorization":
-            v = value.decode("latin-1")
-            if v.lower().startswith("bearer "):
-                token = v[7:].strip()
+            authorization = value.decode("latin-1")
         elif name == b"x-api-key":
             api_key = value.decode("latin-1")
-    # 注意：不再把 Bearer 当作 API Key 兜底，两种凭据通道互相隔离
-
-    if token:
-        claims = decode_token(token)
-        sub = str((claims or {}).get("sub", ""))
-        if sub:
-            return sub, "token"
-
-    if api_key and any(hmac.compare_digest(api_key, k) for k in GATEWAY_API_KEYS):
-        return SERVICE_ACCOUNT, "api_key"
-
-    return "", ""
+    return resolve_identity(authorization, api_key)
 
 
 class GatewayMiddleware:

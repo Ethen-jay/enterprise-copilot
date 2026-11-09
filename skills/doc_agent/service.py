@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import os
 import re
 import uuid
 from pathlib import Path
@@ -90,6 +89,25 @@ def scan_sensitive_info(content: bytes) -> list[str]:
     return found
 
 
+async def _read_upload(file: UploadFile) -> bytes:
+    """上传前置检查：文件名/后缀/非空/敏感信息扫描，通过后返回文件字节。"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="文件名为空")
+    _validate_source_file(file.filename)
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    # 敏感信息扫描（仅记录日志，不阻断转换；生产可改为拒绝）
+    sensitive = scan_sensitive_info(content)
+    if sensitive:
+        logger.warning(
+            "上传文件含敏感信息类型: %s, file=%s", sensitive, file.filename
+        )
+    return content
+
+
 class ConvertResponse(BaseModel):
     status: str
     plan: dict
@@ -103,6 +121,35 @@ class ConvertResponse(BaseModel):
     memory_hint: str = ""
     memory_turns: int = 0
     message: str = ""
+
+
+def _convert_failed(result: dict, *, used_memory: bool = False,
+                    memory_hint: str = "") -> ConvertResponse:
+    """转换失败响应：统一脱敏，不把内部堆栈/临时路径回给客户端。"""
+    logger.error("转换失败: %s, 重试次数: %d", result.get("error"), result.get("retry_count", 0))
+    return ConvertResponse(
+        status="error",
+        plan=result.get("plan") or {},
+        error=_friendly_convert_error(result.get("error", "")),
+        retry_count=result.get("retry_count", 0),
+        used_memory=used_memory,
+        memory_hint=memory_hint,
+    )
+
+
+def _convert_succeeded(result: dict, memory_turns: int, *, used_memory: bool = False,
+                       memory_hint: str = "") -> ConvertResponse:
+    """转换成功响应：统一组装产物信息与会话记忆提示。"""
+    return ConvertResponse(
+        status="ok",
+        plan=result["plan"],
+        output_filename=result["output_filename"],
+        validation=result["validation"],
+        retry_count=result.get("retry_count", 0),
+        used_memory=used_memory,
+        memory_hint=memory_hint,
+        memory_turns=memory_turns,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -215,20 +262,7 @@ async def convert_async(
     session_id: Optional[str] = Depends(session_header),
 ):
     """提交异步转换任务：校验后立即返回 task_id，转换在后台执行，进度轮询 /tasks/{task_id}。"""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="文件名为空")
-    _validate_source_file(file.filename)
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="文件为空")
-
-    # 敏感信息扫描（仅记录日志，不阻断转换；生产可改为拒绝）
-    sensitive = scan_sensitive_info(content)
-    if sensitive:
-        logger.warning(
-            "上传文件含敏感信息类型: %s, file=%s", sensitive, file.filename
-        )
+    content = await _read_upload(file)
 
     task_id = uuid.uuid4().hex[:12]
     DOC_TASKS[task_id] = {
@@ -271,33 +305,14 @@ async def convert(
     session_id: Optional[str] = Depends(session_header),
 ):
     """上传文档 + 自然语言指令，执行转换；成功后写入会话记忆。"""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="文件名为空")
-    _validate_source_file(file.filename)
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="文件为空")
-
-    # 敏感信息扫描（仅记录日志，不阻断转换；生产可改为拒绝）
-    sensitive = scan_sensitive_info(content)
-    if sensitive:
-        logger.warning(
-            "上传文件含敏感信息类型: %s, file=%s", sensitive, file.filename
-        )
+    content = await _read_upload(file)
 
     logger.info("转换请求: file=%s, instruction=%s", file.filename, instruction)
 
     result = engine.convert(content, file.filename, instruction)
 
     if result["status"] == "error":
-        logger.error("转换失败: %s, 重试次数: %d", result.get("error"), result.get("retry_count", 0))
-        return ConvertResponse(
-            status="error",
-            plan=result["plan"],
-            error=_friendly_convert_error(result.get("error", "")),
-            retry_count=result.get("retry_count", 0),
-        )
+        return _convert_failed(result)
 
     memory_turns = _remember_conversion(
         user, session_id, content, file.filename, instruction, result
@@ -309,14 +324,9 @@ async def convert(
         result["validation"]["passed"],
         result.get("retry_count", 0),
     )
-    return ConvertResponse(
-        status="ok",
-        plan=result["plan"],
-        output_filename=result["output_filename"],
-        validation=result["validation"],
-        retry_count=result.get("retry_count", 0),
+    return _convert_succeeded(
+        result, memory_turns,
         memory_hint=("已记住本次转换，可直接说「再把它转成 …」" if session_id else ""),
-        memory_turns=memory_turns,
     )
 
 
@@ -364,27 +374,19 @@ async def convert_followup(
     result = await asyncio.to_thread(engine.convert, content, filename, text)
 
     if result["status"] == "error":
-        return ConvertResponse(
-            status="error",
-            plan=result["plan"],
-            error=result.get("error", ""),
-            retry_count=result.get("retry_count", 0),
+        return _convert_failed(
+            result,
             used_memory=True,
             memory_hint="本次沿用了上文的文件：%s" % filename,
         )
 
     memory_turns = _remember_conversion(user, session_id, content, filename, text, result)
     plan = result["plan"]
-    return ConvertResponse(
-        status="ok",
-        plan=plan,
-        output_filename=result["output_filename"],
-        validation=result["validation"],
-        retry_count=result.get("retry_count", 0),
+    return _convert_succeeded(
+        result, memory_turns,
         used_memory=True,
         memory_hint="本次沿用了上文的文件：%s（%s → %s）" % (
             filename, plan.get("source_format", ""), plan.get("target_format", "")),
-        memory_turns=memory_turns,
     )
 
 
