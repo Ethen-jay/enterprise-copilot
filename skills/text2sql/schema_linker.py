@@ -23,12 +23,13 @@ import re
 import sqlite3
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
 
 # 路径统一由 config 收口
-from .config import PROJECT_ROOT, SEMANTIC_DIR, DB_PATH
+from .config import DB_PATH, PROJECT_ROOT, SEMANTIC_DIR
 from .anchor import get_anchor_date
-from . import datasource, metric_dict
+from . import datasource, metric_dict, schema_scan, userdb
 
 MAX_TABLES = 4          # 候选表上限（Top2~4）
 MAX_FEW_SHOTS = 6       # 拼入的范例条数上限
@@ -224,8 +225,9 @@ def pick_few_shots(question: str, picked: List[PickedTable],
 # ----------------------------------------------------------------------
 # 3. 从只读 SQLite 取示例值
 # ----------------------------------------------------------------------
-def _open_ro() -> sqlite3.Connection:
-    uri = "file:%s?mode=ro" % DB_PATH.resolve().as_posix()
+def _open_ro(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    path = Path(db_path) if db_path else (userdb.current_path() or DB_PATH)
+    uri = "file:%s?mode=ro" % path.resolve().as_posix()
     return sqlite3.connect(uri, uri=True)
 
 
@@ -315,13 +317,109 @@ def _examples_block(examples: Dict[str, Dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _build_external_context(question: str, path: Path,
+                            anchor_date: Optional[str] = None) -> LinkResult:
+    """用户接入库的 schema 上下文：完全由实际扫描结果生成，不读内置语义层。
+
+    内置语义层（tables.md / metrics.md / few_shot.md）描述的是示例库的 22 张表，
+    套到用户库会产生幻觉表名，因此这里只给真实表/列、行数与真实示例值。
+    """
+    scan = schema_scan.scan(path)
+    entries: List[dict] = []
+    sections: Dict[str, str] = {}
+    for table in scan["tables"]:
+        name = table["name"]
+        cols = table["columns"]
+        col_desc = "、".join('`%s` %s' % (c["name"], c.get("type") or "TEXT") for c in cols)
+        rows = table.get("rows") or 0
+        sections[name] = (
+            '### `%s`（%d 行%s）\n- 列：%s'
+            % (name, rows, "以上" if table.get("rows_capped") else "", col_desc)
+        )
+        keywords = [name, Path(name).stem]
+        keywords += [p for p in re.split(r"[_\W]+", name) if len(p) >= 2]
+        keywords += [c["name"] for c in cols if len(c["name"] or "") >= 2]
+        cleaned: List[str] = []
+        for kw in keywords:
+            kw = (kw or "").strip()
+            if kw and kw not in cleaned:
+                cleaned.append(kw)
+        entries.append({
+            "table": name,
+            "business_name": "接入库数据表",
+            "keywords": cleaned,
+            "related": [],
+        })
+
+    picked = score_and_pick(question, entries)
+    warnings: List[str] = []
+    if not picked:
+        # 小库直接全量给出，避免“没命中关键词就答不了”；大库保持原告警
+        if len(entries) <= 12:
+            picked = [
+                PickedTable(table=e["table"], business_name=e["business_name"],
+                            score=0.1, direct=False)
+                for e in entries
+            ]
+        else:
+            warnings.append("未命中任何表/列关键词，候选表为空；请补充更具体的表名或字段名")
+
+    con = _open_ro(path)
+    try:
+        examples = fetch_examples(con, [p.table for p in picked])
+    except sqlite3.Error:
+        examples = {}
+    finally:
+        con.close()
+
+    anchor = anchor_date or get_anchor_date(db_path=path).date
+    parts: List[str] = [
+        "# Schema 上下文（当前接入库，业务基准日 ANCHOR = '%s'）\n" % anchor,
+        "**库内可用表（共 %d 张，只能使用这些表）：**" % scan["included_count"],
+    ]
+    for table in scan["tables"]:
+        parts.append("- `%s`：%d 行 %d 列" % (
+            table["name"], table.get("rows") or 0, len(table["columns"])))
+    if scan["excluded"]:
+        parts.append("\n## 已排除的表（不可查询）")
+        for item in scan["excluded"]:
+            parts.append("- `%s`：%s" % (item["name"], item["reason"]))
+    parts.append("\n## 一、本次问题选中的表（%d 张）\n" % len(picked))
+    for p in picked:
+        tag = "直接命中" if p.direct else "补充给出"
+        hit = "命中词: %s" % "、".join(p.matched) if p.matched else ""
+        parts.append("### `%s`（%s）%s" % (p.table, tag, hit))
+        parts.append(sections.get(p.table, ""))
+        parts.append("")
+    ex = _examples_block(examples)
+    if ex:
+        parts.append(ex)
+        parts.append("")
+    parts.append(
+        "\n## 二、强制规则\n"
+        "- 只生成单条只读 SELECT，禁止任何写操作；\n"
+        "- 表名、列名必须与上面完全一致（中文/特殊字符用双引号包裹）；\n"
+        "- 日期过滤以 ANCHOR='%s' 为数据最新日；\n"
+        "- 不确定字段含义时根据列名与示例值判断，不要臆造不存在的列。\n" % anchor
+    )
+    return LinkResult(
+        question=question,
+        picked=picked,
+        examples=examples,
+        few_shots=[],
+        warnings=warnings,
+        context_text="\n".join(parts),
+    )
+
+
 def build_context(question: str,
                   kw_entries: Optional[List[dict]] = None,
                   table_sections: Optional[Dict[str, str]] = None,
                   shots: Optional[List[dict]] = None,
                   con: Optional[sqlite3.Connection] = None,
                   anchor_date: Optional[str] = None,
-                  use_metric_dict: bool = True) -> LinkResult:
+                  use_metric_dict: bool = True,
+                  db_path: Optional[Path] = None) -> LinkResult:
     """
     主入口：问题 -> LinkResult（含 context_text）。
 
@@ -330,11 +428,22 @@ def build_context(question: str,
     会被统一替换为该锚点。
     use_metric_dict：是否注入人工确认的指标口径字典；默认 True，
     仅评测消融时置 False，不影响线上默认行为。
+    db_path：当前用户接入的库；省略时取请求绑定的数据源。内置示例库走
+    语义层（tables.md / metrics.md / few_shot.md），用户接入库完全按实际
+    schema 扫描生成上下文（见 _build_external_context）。
     """
+    target = Path(db_path) if db_path else (userdb.current_path() or DB_PATH)
+    try:
+        is_builtin = target.resolve() == DB_PATH.resolve()
+    except OSError:
+        is_builtin = False
+    if not is_builtin:
+        return _build_external_context(question, target, anchor_date=anchor_date)
+
     kw_entries = kw_entries if kw_entries is not None else load_keywords()
     table_sections = table_sections if table_sections is not None else load_table_sections()
     shots = shots if shots is not None else load_few_shots()
-    anchor = anchor_date or get_anchor_date().date
+    anchor = anchor_date or get_anchor_date(db_path=target).date
 
     # 用户上传的 xlsx/csv 表：动态加入选表关键词与分节；
     # 读取失败时降级为只有业务库（不影响原有问数链路）。
@@ -353,7 +462,7 @@ def build_context(question: str,
     if not picked:
         warnings.append("未命中任何表关键词，候选表为空（需补充 table_keywords.json 或人工指定表）")
 
-    own_con = con if con is not None else _open_ro()
+    own_con = con if con is not None else _open_ro(target)
     try:
         # 用户上传表在独立附加库，示例值已随分节给出，这里只取业务库表
         business_tables = [p.table for p in picked if not p.table.startswith("userdb.")]

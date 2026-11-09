@@ -51,6 +51,11 @@ METRIC_DICT_PATH = Path(
 if not METRIC_DICT_PATH.is_absolute():
     METRIC_DICT_PATH = PROJECT_ROOT / METRIC_DICT_PATH
 
+# 用户私有数据源目录（每个用户一个子目录，存放 connection.json 与上传的 SQLite）
+USERDB_DIR = Path(os.getenv("USERDB_DIR", str(DATA_DIR / "userdb")))
+if not USERDB_DIR.is_absolute():
+    USERDB_DIR = PROJECT_ROOT / USERDB_DIR
+
 # 上传数据源大小上限（与 RAG 入库的 50MB 口径一致）
 MAX_DATASOURCE_MB = int(float(os.getenv("MAX_DATASOURCE_MB", "50")))
 # 单表最多导入行数，防止超大表拖垮内存/建库

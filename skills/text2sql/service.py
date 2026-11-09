@@ -40,7 +40,7 @@ from common.auth import current_user
 from common import chat_memory
 from common.chat_memory import session_header
 from . import config
-from . import datasource, metric_dict
+from . import datasource, metric_dict, schema_scan, userdb
 from .anchor import get_anchor_date, get_snapshot_date
 from .schema_linker import build_context, log_link
 from .llm_client import generate_sql, regenerate_sql, rewrite_question, LLMError
@@ -258,7 +258,7 @@ def health(probe: bool = False):
         except Exception:
             llm_reachable = False
 
-    anchor = get_anchor_date()
+    anchor = get_anchor_date(db_path=config.DB_PATH)
     healthy = db_ok and llm_ready and llm_reachable is not False
     return {
         "status": "ok" if healthy else "degraded",
@@ -267,8 +267,152 @@ def health(probe: bool = False):
         "anchor_date": anchor.date,
         "anchor_dynamic": anchor.dynamic,
         "anchor_source": anchor.source,
-        "snapshot_date": get_snapshot_date(),
+        "snapshot_date": get_snapshot_date(config.DB_PATH),
     }
+
+
+# ----------------------------------------------------------------------
+# 数据源：接入 / 切换 / 状态（状态条完全由这里驱动，不再写死）
+# ----------------------------------------------------------------------
+def _datasource_status(user: str, refresh: bool = False) -> dict:
+    """返回当前用户数据源的真实状态：连接信息 + schema 扫描结果。"""
+    info = userdb.describe(user)
+    if not info["connected"]:
+        return {
+            "connected": False,
+            "state": "not_connected",
+            "message": "未接入数据库",
+            "kind": None,
+            "filename": "",
+            "connected_at": "",
+            "table_count": 0,
+            "total_tables": 0,
+            "excluded_count": 0,
+            "tables": [],
+            "excluded": [],
+            "snapshot_date": "",
+            "snapshot_source": "",
+            "scan": {"cached": False, "duration_ms": 0, "scanned_at": ""},
+        }
+    path = userdb.resolve_path(user)
+    if path is None:
+        return {
+            "connected": False,
+            "state": "missing",
+            "message": "数据源文件不存在，请重新接入",
+            "kind": info.get("kind"),
+            "filename": info.get("filename", ""),
+            "connected_at": info.get("connected_at", ""),
+            "table_count": 0,
+            "total_tables": 0,
+            "excluded_count": 0,
+            "tables": [],
+            "excluded": [],
+            "snapshot_date": "",
+            "snapshot_source": "",
+            "scan": {"cached": False, "duration_ms": 0, "scanned_at": ""},
+        }
+    scan = schema_scan.scan(path, force=refresh)
+    snapshot_date = scan["snapshot_date"]
+    snapshot_source = scan["snapshot_source"]
+    snapshot_note = scan["snapshot_note"]
+    if info.get("kind") == userdb.KIND_DEMO:
+        # 示例库用业务锚点（事实表的业务日期最大日），避免把交付承诺日 due_date
+        # 这类未来日期当成“数据快照”；仍是实时计算，不是写死值。
+        anchor = get_anchor_date(db_path=path)
+        snapshot_date = get_snapshot_date(path)
+        snapshot_source = anchor.source
+        snapshot_note = "取业务事实表日期列的最大值（与问数锚点一致）"
+    return {
+        "connected": True,
+        "state": "ok",
+        "message": "已接入",
+        "kind": info.get("kind"),
+        "filename": info.get("filename", ""),
+        "connected_at": info.get("connected_at", ""),
+        "size_bytes": info.get("size_bytes", 0),
+        "table_count": scan["included_count"],
+        "total_tables": scan["total_tables"],
+        "excluded_count": scan["excluded_count"],
+        "tables": scan["tables"],
+        "excluded": scan["excluded"],
+        "snapshot_date": snapshot_date,
+        "snapshot_source": snapshot_source,
+        "snapshot_note": snapshot_note,
+        "scan": {
+            "cached": scan["cached"],
+            "duration_ms": scan["duration_ms"],
+            "scanned_at": scan["scanned_at"],
+            "fingerprint": scan["fingerprint"],
+        },
+    }
+
+
+@router.get("/datasource/status")
+def datasource_status(refresh: bool = False, user: str = Depends(current_user)):
+    """状态条接口：表数量、数据快照日期、纳入/排除表清单都来自真实扫描。"""
+    return _datasource_status(user, refresh=refresh)
+
+
+@router.post("/datasource/connect-demo")
+def datasource_connect_demo(user: str = Depends(current_user)):
+    """接入内置示例库（只读共享）。"""
+    try:
+        userdb.connect_demo(user)
+    except userdb.DataSourceConnectError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+    return _datasource_status(user, refresh=True)
+
+
+@router.post("/datasource/sqlite")
+async def datasource_connect_sqlite(
+    file: UploadFile = File(...),
+    user: str = Depends(current_user),
+):
+    """上传 SQLite（.db/.sqlite/.sqlite3）作为当前用户私有数据源。"""
+    filename = file.filename or ""
+    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in {".db", ".sqlite", ".sqlite3"}:
+        raise HTTPException(
+            status_code=400,
+            detail="不支持的数据库文件格式: %s，支持 .db/.sqlite/.sqlite3" % (ext or "未知"),
+        )
+
+    max_bytes = config.MAX_DATASOURCE_MB * 1024 * 1024
+    upload_dir = config.DATA_DIR / "tmp" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix="dsdb_", dir=str(upload_dir))
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="文件超过 %dMB 上限" % config.MAX_DATASOURCE_MB,
+                    )
+                out.write(chunk)
+        try:
+            userdb.connect_sqlite(user, Path(tmp_path), filename)
+        except userdb.DataSourceConnectError as e:
+            raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return _datasource_status(user, refresh=True)
+
+
+@router.delete("/datasource/connection")
+def datasource_disconnect(user: str = Depends(current_user)):
+    """断开当前数据源（不删除已上传文件）。"""
+    userdb.disconnect(user)
+    return _datasource_status(user)
 
 
 # ----------------------------------------------------------------------
@@ -293,10 +437,35 @@ def _ask_pipeline(
     user: str = "",
     session_id: Optional[str] = None,
 ) -> AskResponse:
+    """问答主链路入口：先解绑/绑定当前用户的数据源，再走实际管线。
+
+    未接入数据库时直接返回明确提示，不打开任何默认库、不抛堆栈。
+    """
+    db_path = userdb.resolve_path(user)
+    if db_path is None:
+        return AskResponse(
+            question=req.question.strip(),
+            error="请先接入数据库：在「数据问答」页接入示例库或上传 SQLite 文件后再提问",
+        )
+    userdb.set_current(db_path)
+    try:
+        return _ask_pipeline_bound(req, progress, user, session_id, db_path)
+    finally:
+        userdb.clear_current()
+
+
+def _ask_pipeline_bound(
+    req: AskRequest,
+    progress: Optional[Callable[[str, str], None]] = None,
+    user: str = "",
+    session_id: Optional[str] = None,
+    db_path=None,
+) -> AskResponse:
     """问答主链路（/ask 与 /ask/stream 共用）：选表 → 生成 SQL → 守卫 → 执行（失败自动修复 1 次）。
 
     progress(stage, message) 仅用于 SSE 状态提示，不参与任何业务判断。
     会话记忆：仅把追问改写成独立问句，再走原有链路；守卫/LIMIT/超时一律不变。
+    db_path：本次请求绑定的数据源（调用方保证已接入）。
     """
     emit = progress or (lambda stage, message: None)
     question = req.question.strip()
@@ -329,12 +498,13 @@ def _ask_pipeline(
 
     # 动态锚点：一次请求内取一次，schema 上下文与 system prompt 保持同一锚点
     emit("selecting", "正在选择数据表…")
-    anchor_info = get_anchor_date()
+    anchor_info = get_anchor_date(db_path=db_path)
     print("[Ask] 动态锚点：%s（%s）" % (anchor_info.date, anchor_info.source))
 
     # 1) Schema Linking（选表异常不致命：仍把全量表清单交给模型试一次）
     try:
-        link = build_context(effective_question, anchor_date=anchor_info.date)
+        link = build_context(effective_question, anchor_date=anchor_info.date,
+                             db_path=db_path)
         log_link(link)
         resp.picked_tables = link.table_names
         resp.few_shots = link.few_shots
@@ -350,7 +520,7 @@ def _ask_pipeline(
     try:
         llm_result = generate_sql(effective_question, schema_context,
                                   anchor_date=anchor_info.date,
-                                  snapshot_date=get_snapshot_date(),
+                                  snapshot_date=get_snapshot_date(db_path),
                                   clarification=req.clarification.strip())
     except LLMError as e:
         emit("error", "生成 SQL 失败：%s" % e)
@@ -385,7 +555,7 @@ def _ask_pipeline(
     # 4) 只读执行；失败时把原 SQL + 报错回喂模型自动修正，再走一遍守卫+执行（最多 1 次）
     emit("executing", "守卫通过，正在执行查询…")
     try:
-        result = execute_select(guarded.sql)
+        result = execute_select(guarded.sql, db_path)
     except ReadonlyExecError as first_err:
         logger.warning("SQL 执行失败，自动修复重试：%s", first_err)
         emit("repairing", "执行失败，正在把报错回喂模型自动修复…")
@@ -394,7 +564,7 @@ def _ask_pipeline(
             fix = regenerate_sql(effective_question, schema_context, guarded.sql,
                                  sanitize_sql_error(str(first_err)),
                                  anchor_date=anchor_info.date,
-                                 snapshot_date=get_snapshot_date())
+                                 snapshot_date=get_snapshot_date(db_path))
         except LLMError as e:
             emit("error", "自动修复时调用模型失败：%s" % e)
             resp.error = "%s（自动修复时调用模型失败：%s）" % (first_msg, e)
@@ -413,7 +583,7 @@ def _ask_pipeline(
             return resp
         emit("executing", "修正版 SQL 守卫通过，正在重新执行查询…")
         try:
-            result = execute_select(g2.sql)
+            result = execute_select(g2.sql, db_path)
         except ReadonlyExecError as e2:
             emit("error", "已自动修正重试仍失败：%s" % e2)
             resp.error = "%s；已自动修正重试仍失败：%s" % (first_msg, sanitize_sql_error(str(e2)))
@@ -567,10 +737,20 @@ async def datasource_upload(
                     )
                 out.write(chunk)
         try:
+            # 用户接入自己的 SQLite 时，表格直接建到该私有副本里；否则进共享
+            # 导入库（内置示例库模式下由 executor 以 userdb 只读 ATTACH）
+            target_db = None
+            try:
+                if userdb.describe(user).get("kind") == userdb.KIND_SQLITE:
+                    target_db = userdb.resolve_path(user)
+            except Exception:  # noqa: BLE001 - 连接信息异常不影响共享库导入
+                target_db = None
             result = datasource.import_file(
                 Path(tmp_path), filename, table_name=table_name.strip() or None,
-                replace=replace,
+                replace=replace, db_path=target_db,
             )
+            if target_db:
+                schema_scan.invalidate(target_db)
         except datasource.DataSourceError as e:
             raise HTTPException(status_code=e.status_code, detail=str(e)) from e
     finally:

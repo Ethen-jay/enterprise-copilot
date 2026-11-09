@@ -17,9 +17,11 @@ schema_linker -> llm_client -> sql_guard -> executor 串起来。
 import sqlite3
 import sys
 import time
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, List, Optional
 
 from .config import DB_PATH, USER_DB_PATH
+from .userdb import NotConnectedError, current_path
 
 # 查询级超时（毫秒）：防止慢查询把服务挂住
 QUERY_TIMEOUT_MS = 10_000
@@ -33,22 +35,35 @@ class ReadonlyExecError(Exception):
     """只读执行失败（SQL 语法错误、超时等），message 可直接展示。"""
 
 
-def open_readonly_connection() -> sqlite3.Connection:
+def open_readonly_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """
     以严格只读方式打开 SQLite：
       - file:...?mode=ro 是 SQLite 官方只读模式，任何写操作直接报错；
       - uri=True 才会识别 file: 协议；
       - 路径统一转成正斜杠，避免 Windows 反斜杠在 URI 里被当转义符。
 
-    用户上传表（xlsx/csv 导入）放在独立的 USER_DB_PATH，以只读方式
-    ATTACH 成 `userdb` 附加库：主库仍只读，附加库也 mode=ro，
-    生成的 SQL 需用 userdb."表名" 限定，守卫/LIMIT/超时路径不变。
+    db_path 省略时取当前请求绑定的数据源（userdb.set_current）。
+    未接入任何数据库时抛 NotConnectedError，调用方据此返回
+    “请先接入数据库”，不回落默认库、也不报堆栈。
+
+    仅当主库是内置示例库时，才把历史遗留的 xlsx/csv 导入库
+    （USER_DB_PATH）以只读方式 ATTACH 成 `userdb`；用户接入自己的库时
+    不挂载，避免跨用户看到别人上传的表格。
     """
-    uri = "file:%s?mode=ro" % DB_PATH.resolve().as_posix()
+    path = Path(db_path) if db_path else current_path()
+    if path is None:
+        raise NotConnectedError("请先接入数据库")
+    if not path.exists():
+        raise NotConnectedError("数据源文件不存在，请重新接入")
+    uri = "file:%s?mode=ro" % path.resolve().as_posix()
     con = sqlite3.connect(uri, uri=True, timeout=QUERY_TIMEOUT_MS / 1000)
     # 再兜一层：本连接上不允许任何隐式写（触发器之类），双保险
     con.execute("PRAGMA query_only = ON")
-    if USER_DB_PATH.exists():
+    try:
+        is_builtin = path.resolve() == DB_PATH.resolve()
+    except OSError:
+        is_builtin = False
+    if is_builtin and USER_DB_PATH.exists() and USER_DB_PATH.resolve() != path.resolve():
         try:
             user_uri = "file:%s?mode=ro" % USER_DB_PATH.resolve().as_posix()
             con.execute("ATTACH DATABASE ? AS userdb", (user_uri,))
@@ -58,7 +73,7 @@ def open_readonly_connection() -> sqlite3.Connection:
     return con
 
 
-def execute_select(sql: str) -> Dict[str, object]:
+def execute_select(sql: str, db_path: Optional[Path] = None) -> Dict[str, object]:
     """
     执行一条已通过 sql_guard 检查的只读 SELECT。
 
@@ -68,9 +83,10 @@ def execute_select(sql: str) -> Dict[str, object]:
         "rows": [["海思半导体", 124623.6], ...],
         "row_count": 12
       }
-    失败抛 ReadonlyExecError（调用方负责把 message 返回给用户/记录日志）。
+     失败抛 ReadonlyExecError（调用方负责把 message 返回给用户/记录日志）；
+     未接入数据库抛 NotConnectedError（调用方转成“请先接入数据库”提示）。
     """
-    con = open_readonly_connection()
+    con = open_readonly_connection(db_path)
     try:
         # 真·执行超时：connect(timeout=) 只控制等锁，拦不住笛卡尔积这类慢查询；
         # progress_handler 在 SQLite 虚拟机内定期回调，超时返回非 0 即中断执行。
@@ -125,7 +141,7 @@ def main(argv: List[str]) -> int:
         print("（守卫已自动补 LIMIT %d）" % 100)
 
     try:
-        result = execute_select(guarded.sql)
+        result = execute_select(guarded.sql, db_path=DB_PATH)
     except ReadonlyExecError as e:
         print(e)
         return 1

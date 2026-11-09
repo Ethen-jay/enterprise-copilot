@@ -31,10 +31,13 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Tuple
 
-from .config import ANCHOR_DATE, ANCHOR_TTL_SECONDS, SNAPSHOT_DATE
+from .config import ANCHOR_DATE, ANCHOR_TTL_SECONDS, DB_PATH, SNAPSHOT_DATE
+from . import schema_scan
 from .executor import open_readonly_connection
+from .userdb import current_path
 
 # 探针清单：(表名, 业务时间列, 附加 WHERE 或 None)
 # 新增事实表时在这里补一行；只放"实际发生"类日期，禁止计划/到期类。
@@ -59,16 +62,27 @@ class AnchorInfo:
 # ----------------------------------------------------------------------
 # 1. 现查库（无缓存）
 # ----------------------------------------------------------------------
-def query_anchor_date() -> AnchorInfo:
+def query_anchor_date(db_path: Optional[Path] = None) -> AnchorInfo:
     """
-    对每个探针执行 SELECT MAX(date(col))，取整体最大值。
+    对内置示例库按 ANCHOR_PROBES 探测；对用户接入的库则按扫描出的
+    日期列取 MAX（见 schema_scan），口径统一为“库内真实数据的最大日期”。
+
     任何单探针失败（表被删、列改名、库打不开）只跳过不抛错；
     全部失败时回退 config.ANCHOR_DATE（dynamic=False），保证服务可用。
     """
+    path = Path(db_path) if db_path else (current_path() or DB_PATH)
+    try:
+        is_builtin = path.resolve() == DB_PATH.resolve()
+    except OSError:
+        is_builtin = False
+
+    if not is_builtin:
+        return _query_user_anchor(path)
+
     results = []   # [(date, 来源描述)]
     errors = []    # [失败原因]
     try:
-        con = open_readonly_connection()
+        con = open_readonly_connection(path)
     except sqlite3.Error as e:
         return AnchorInfo(date=ANCHOR_DATE, dynamic=False,
                           source="fallback（数据库无法打开：%s）" % e)
@@ -103,44 +117,72 @@ def query_anchor_date() -> AnchorInfo:
                       source="MAX(业务日期) -> %s（%s）" % (best[0], hits))
 
 
+def _query_user_anchor(path: Path) -> AnchorInfo:
+    """用户接入库：用 schema 扫描出的日期列取 MAX，扫描结果本身带缓存。"""
+    try:
+        info = schema_scan.scan(path)
+    except (OSError, sqlite3.Error) as e:
+        return AnchorInfo(date=ANCHOR_DATE, dynamic=False,
+                          source="fallback（数据源无法扫描：%s）" % e)
+    date = info.get("snapshot_date") or ANCHOR_DATE
+    dynamic = bool(info.get("snapshot_dynamic"))
+    source = "schema 扫描 -> %s（%s）" % (date, info.get("snapshot_source") or "无日期列")
+    return AnchorInfo(date=date, dynamic=dynamic, source=source)
+
+
 # ----------------------------------------------------------------------
 # 2. TTL 缓存入口（schema_linker / llm_client / service 都从这里取）
 # ----------------------------------------------------------------------
 _cache_lock = threading.Lock()
-_cache: dict = {"info": None, "ts": 0.0}
+_cache: dict = {"info": None, "ts": 0.0, "key": ""}
 
 
-def get_anchor_date(force_refresh: bool = False) -> AnchorInfo:
+def _path_key(path: Optional[Path]) -> str:
+    target = Path(path) if path else (current_path() or DB_PATH)
+    try:
+        return str(target.resolve())
+    except OSError:
+        return str(target)
+
+
+def get_anchor_date(force_refresh: bool = False, db_path: Optional[Path] = None) -> AnchorInfo:
     """
-    带进程内 TTL 缓存的锚点入口：
+    带进程内 TTL 缓存的锚点入口（缓存按数据源路径隔离）：
       - 缓存未过期直接复用（数据按天滚动，默认 5 分钟足够跟进）；
       - force_refresh=True 或 TTL=0 时每次现查；
       - 线程安全（FastAPI 同步端点跑在线程池里）。
     """
+    key = _path_key(db_path)
     if ANCHOR_TTL_SECONDS <= 0 or force_refresh:
-        info = query_anchor_date()
+        info = query_anchor_date(db_path)
         with _cache_lock:
-            _cache["info"], _cache["ts"] = info, time.time()
+            _cache.update(info=info, ts=time.time(), key=key)
         return info
 
     with _cache_lock:
-        if _cache["info"] is not None and time.time() - _cache["ts"] < ANCHOR_TTL_SECONDS:
+        if (_cache["info"] is not None and _cache["key"] == key
+                and time.time() - _cache["ts"] < ANCHOR_TTL_SECONDS):
             return _cache["info"]
-    info = query_anchor_date()
+    info = query_anchor_date(db_path)
     with _cache_lock:
-        _cache["info"], _cache["ts"] = info, time.time()
+        _cache.update(info=info, ts=time.time(), key=key)
     return info
 
 
-def get_snapshot_date() -> str:
+def get_snapshot_date(db_path: Optional[Path] = None) -> str:
     """
-    应收账龄快照日：
-      - .env 显式配置了 SNAPSHOT_DATE -> 固定值（人工演示场景，如切月末看逾期）；
-      - 未配置 -> 跟随动态锚点（生产语义：财务观察时点=数据最新日）。
+    数据快照日（状态条展示口径）：
+      - 内置示例库显式配置了 SNAPSHOT_DATE -> 固定值（人工演示场景）；
+      - 其余情况 -> 跟随该库真实数据的最大业务日期（用户接入库走 schema 扫描）。
     """
-    if SNAPSHOT_DATE:
+    target = Path(db_path) if db_path else (current_path() or DB_PATH)
+    try:
+        is_builtin = target.resolve() == DB_PATH.resolve()
+    except OSError:
+        is_builtin = False
+    if SNAPSHOT_DATE and is_builtin:
         return SNAPSHOT_DATE
-    return get_anchor_date().date
+    return get_anchor_date(db_path=target).date
 
 
 # ----------------------------------------------------------------------

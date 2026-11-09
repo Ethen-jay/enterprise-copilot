@@ -249,9 +249,10 @@ def _prepare_sheet(
 # ----------------------------------------------------------------------
 # 写库
 # ----------------------------------------------------------------------
-def _connect_write() -> sqlite3.Connection:
-    USER_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(USER_DB_PATH), timeout=15)
+def _connect_write(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    target = Path(db_path) if db_path else USER_DB_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(target), timeout=15)
     con.execute(
         "CREATE TABLE IF NOT EXISTS %s ("
         " name TEXT PRIMARY KEY, display_name TEXT, source_file TEXT, sheet TEXT,"
@@ -277,8 +278,14 @@ def import_file(
     filename: str,
     table_name: Optional[str] = None,
     replace: bool = False,
+    db_path: Optional[Path] = None,
 ) -> dict:
-    """把 xlsx/csv 导入用户库，返回导入摘要（可展示给前端）。"""
+    """把 xlsx/csv 导入用户库，返回导入摘要（可展示给前端）。
+
+    db_path 省略时写入共享的 USER_DB_PATH（内置示例库场景，供 ATTACH 使用）；
+    用户接入自己的 SQLite 时，service 会把私有副本路径传进来，表直接建在
+    该库中，随后 schema 扫描/状态条/问数都立即可见。
+    """
     ext = Path(filename).suffix.lower()
     if ext in (".xlsx", ".xlsm"):
         sheets = _read_xlsx_sheets(path)
@@ -327,7 +334,7 @@ def import_file(
     imported = []
     replaced = []
     with _IMPORT_LOCK:
-        con = _connect_write()
+        con = _connect_write(db_path)
         try:
             with con:  # 单事务：任一张表失败则整体回滚
                 for spec in prepared:
@@ -387,7 +394,7 @@ def import_file(
         "source_file": filename,
         "tables": imported,
         "replaced": replaced,
-        "db": str(USER_DB_PATH),
+        "db": str(Path(db_path) if db_path else USER_DB_PATH),
     }
 
 
